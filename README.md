@@ -87,6 +87,7 @@ scripts/     部署与控制面脚本
   create_gateway.py      建 Gateway + Lambda target
   setup_identity.py      配出向凭证(DeepSeek key + 自建 IdP 的 OAuth2)
   invoke.py              调用客户端(同步 / 流式 / 异步 / 自检)
+  demo.sh                按顺序点亮八项能力的演示脚本
   naming.py              客户端 ID 与 scope 约定的唯一来源
 tests/       本地单元测试(不需要 AWS 凭证)
 ```
@@ -94,7 +95,7 @@ tests/       本地单元测试(不需要 AWS 凭证)
 ## 测试
 
 ```
-pytest tests/                                  # 475 个用例,不需要 AWS 凭证
+pytest tests/                                  # 521 个用例,不需要 AWS 凭证
 cfn-lint infra/*.yaml --region cn-northwest-1   # 模板离线校验
 ```
 
@@ -141,7 +142,12 @@ cp .env.example .env          # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 ./scripts/deploy.sh --identity
 ./scripts/deploy.sh --runtime
 python scripts/invoke.py --selftest
+./scripts/demo.sh             # 完整演示;--auto 不等回车、--list 只看大纲
 ```
+
+**已在真实账号验证**:cn-northwest-1 上自检 8/8 通过(20 秒),
+完整业务链路 25 秒 —— 模型自主完成查订单 → Browser 读物流页 →
+沙箱按分算赔付 → 开工单 → 记住偏好。踩过的坑见 `docs/DEPLOY.md`。
 
 完整步骤、分阶段验证清单、以及**必须在真实账号里确认的 8 项**见
 `docs/DEPLOY.md`。

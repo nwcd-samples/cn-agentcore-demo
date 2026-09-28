@@ -106,18 +106,16 @@ note "issuer = $ISSUER"
 
 note "GET /.well-known/openid-configuration"
 curl -fsS --max-time 20 "$ISSUER/.well-known/openid-configuration" \
-  | "$PY" -c '
-import json, sys
+  | "$PY" -c 'import json, sys
 d = json.load(sys.stdin)
-print(f"  grant_types : {d[\"grant_types_supported\"]}")
-print(f"  签名算法     : {d[\"id_token_signing_alg_values_supported\"]}")'
+print("  grant_types :", d["grant_types_supported"])
+print("  签名算法     :", d["id_token_signing_alg_values_supported"])' 
 
 note "GET /.well-known/jwks.json(公钥从 KMS 派生,私钥不出 KMS)"
 curl -fsS --max-time 20 "$ISSUER/.well-known/jwks.json" \
-  | "$PY" -c '
-import json, sys
+  | "$PY" -c 'import json, sys
 k = json.load(sys.stdin)["keys"][0]
-print(f"  kid={k[\"kid\"]}  kty={k[\"kty\"]}  alg={k[\"alg\"]}")'
+print("  kid={}  kty={}  alg={}".format(k["kid"], k["kty"], k["alg"]))' 
 
 AGENT_JWT_TOKEN="$(curl -fsS --max-time 25 -u "$DEMO_CLIENT_ID:$DEMO_CLIENT_SECRET" \
   -d "grant_type=password&username=$DEMO_USERNAME&password=$DEMO_PASSWORD" \
@@ -138,7 +136,9 @@ note "错密码会被拒(顺手验一下 IdP 真的在校验):"
 curl -s --max-time 20 -u "$DEMO_CLIENT_ID:$DEMO_CLIENT_SECRET" \
   -d "grant_type=password&username=$DEMO_USERNAME&password=definitely-wrong" \
   "$ISSUER/oauth2/token" \
-  | "$PY" -c 'import json,sys;d=json.load(sys.stdin);print(f"  -> {d.get(\"error\")}: {d.get(\"error_description\")}")'
+  | "$PY" -c 'import json,sys
+d = json.load(sys.stdin)
+print("  ->", d.get("error"), "|", d.get("error_description"))' 
 pause
 
 # ---- 2. 自检 -------------------------------------------------------------
@@ -196,7 +196,7 @@ banner "会话隔离" \
 
 note "会话 A:告诉它一个只有 A 知道的编号"
 "$PY" scripts/invoke.py --new-session --timeout 120 \
-  --prompt "记住这次排查的内部编号是 CASE-7788,直接确认即可。" 2>&1 | tail -3
+  --prompt "这次排查的内部编号是 CASE-7788,记在心里,后面我会问你。先回复「已记下 CASE-7788」。" 2>&1 | tail -4
 echo
 note "会话 B(全新 session):问它这个编号"
 "$PY" scripts/invoke.py --new-session --timeout 120 \
@@ -214,11 +214,26 @@ note "全新会话,问它记得什么偏好:"
 "$PY" scripts/invoke.py --new-session --timeout 120 \
   --prompt "你还记得我的联系偏好吗?直接说,不用调工具。" 2>&1 | tail -6
 
-note "直接看 DynamoDB 里存在哪个分区下:"
+note "直接看 DynamoDB 里存在哪个分区下(actor_id 从 JWT 解出,不是拼的):"
+ACTOR_ID="$("$PY" - <<'EOF'
+import base64, json, os
+p = os.environ["AGENT_JWT_TOKEN"].split(".")[1]
+c = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+print(c.get("actor_id") or c.get("sub") or "anonymous")
+EOF
+)"
+note "分区键 = ACTOR#${ACTOR_ID}"
 "${AWS[@]}" dynamodb query --table-name "${PROJECT:-agentcore-cn}-memory" \
   --key-condition-expression "PK = :pk AND begins_with(SK, :p)" \
-  --expression-attribute-values '{":pk":{"S":"ACTOR#actor-'"${DEMO_USERNAME:-demo-user}"'"},":p":{"S":"FACT#"}}' \
-  --query 'Items[].[SK.S,value.S]' --output text 2>/dev/null | sed 's/^/  /' || true
+  --expression-attribute-values "{\":pk\":{\"S\":\"ACTOR#${ACTOR_ID}\"},\":p\":{\"S\":\"FACT#\"}}" \
+  --query 'Items[].[SK.S,value.S]' --output text 2>&1 | sed 's/^/  /'
+
+note "换个 actor 看隔离(应该是空的):"
+n="$("${AWS[@]}" dynamodb query --table-name "${PROJECT:-agentcore-cn}-memory" \
+  --key-condition-expression "PK = :pk" \
+  --expression-attribute-values '{":pk":{"S":"ACTOR#anonymous"}}' \
+  --query 'Count' --output text 2>/dev/null || echo "?")"
+note "  ACTOR#anonymous 条目数 = $n"
 pause
 
 # ---- 8. 版本与灰度 -------------------------------------------------------
