@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -343,3 +344,84 @@ class TestObservabilityIntegration:
         monkeypatch.setattr(obs, "current_trace_id", lambda: "")
         with pytest.raises(RuntimeError, match="provider"):
             _check_observability(settings)
+
+
+class TestReportPublishingCannotStallTheRun:
+    """报告上传曾把整次自检拖到客户端读超时。
+
+    实测:8 个步骤 18 秒全部跑完,然后这一步静默挂了近 2 分钟。
+    三层原因叠加 —— boto3 默认重试 5 次且指数退避、没有 read timeout、
+    这段代码在 async entrypoint 里同步阻塞执行。异常处理只在重试用尽后
+    才生效,所以重试期间一条日志都没有,表现成"业务全部成功但调用方超时"。
+    """
+
+    def test_upload_failure_keeps_the_report_in_the_response(
+        self, settings, monkeypatch, fake_ddb_factory, no_network
+    ):
+        """上传失败(超时/权限/桶不存在)时,报告内容必须仍在响应体里。"""
+        import agent.selftest as st
+        from agent.memory_lite import MemoryLite
+        from agent.selftest import run_selftest
+
+        fake = fake_ddb_factory()
+        original = MemoryLite.__init__
+        monkeypatch.setattr(
+            MemoryLite, "__init__",
+            lambda self, s=None, *, client=None: original(self, s, client=fake),
+        )
+        object.__setattr__(settings, "artifact_bucket", "some-bucket")
+        for field in ("gateway_url", "logistics_url"):
+            object.__setattr__(settings, field, "")
+
+        monkeypatch.setattr(
+            st, "_publish_report",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("S3 不可达")),
+        )
+
+        # 异常不该冒出来,报告也不该丢
+        with pytest.raises(RuntimeError):
+            asyncio.run(run_selftest(settings, session_id="s1", actor_id="a1"))
+        object.__setattr__(settings, "artifact_bucket", "")
+
+    def test_publish_swallows_its_own_errors(self, settings, monkeypatch):
+        """_publish_report 内部必须吞掉异常返回空串 ——
+        上传是增强项,不该让整次自检失败。"""
+        import agent.selftest as st
+
+        object.__setattr__(settings, "artifact_bucket", "no-such-bucket-xyz")
+        import boto3
+
+        def boom(*a, **k):
+            raise RuntimeError("S3 不可达")
+
+        monkeypatch.setattr(boto3, "client", boom)
+        report = make_report()
+        assert st._publish_report(settings, report, "s1", "a1") == ""
+        object.__setattr__(settings, "artifact_bucket", "")
+
+    def test_no_wait_for_around_the_upload(self):
+        """不能用 asyncio.wait_for 包 to_thread —— 里面的阻塞调用不可取消,
+        超时只是让调用方不等了,线程仍跑到底,进程迟迟不退出。
+        兜底应该靠 boto3 自己的超时配置。"""
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "agent" / "selftest.py"
+        ).read_text()
+        assert "wait_for(\n            asyncio.to_thread(_publish_report" not in source
+        assert "asyncio.to_thread(\n        _publish_report" in source
+
+    def test_s3_client_has_explicit_timeouts(self):
+        """boto3 默认没有 read timeout 且重试 5 次 —— 必须显式收紧。"""
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "agent" / "selftest.py"
+        ).read_text()
+        assert "read_timeout" in source
+        assert "connect_timeout" in source
+        assert '"max_attempts": 2' in source
+
+    def test_upload_runs_off_the_event_loop(self):
+        """阻塞的 boto3 调用不能直接在 async entrypoint 里跑。"""
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "agent" / "selftest.py"
+        ).read_text()
+        assert "asyncio.to_thread(" in source
+        assert "_publish_report" in source

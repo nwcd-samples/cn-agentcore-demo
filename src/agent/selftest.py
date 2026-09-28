@@ -311,17 +311,40 @@ def _check_browser(settings: Settings) -> str:
 def _publish_report(
     settings: Settings, report: Report, session_id: str, actor_id: str
 ) -> str:
-    """把报告写 S3 并返回预签名链接。失败返回空串 —— 报告本身还在响应体里。"""
+    """把报告写 S3 并返回预签名链接。失败返回空串 —— 报告本身还在响应体里。
+
+    【实测踩过的坑】这一步曾把整次 selftest 拖到客户端读超时:
+    8 个步骤 18 秒就全跑完了,然后这里静默挂了将近 2 分钟。
+
+    原因有三层叠加:
+      1. boto3 默认重试最多 5 次且指数退避,默认没有 read timeout
+      2. 这段代码在 async entrypoint 里同步阻塞执行,一慢就堵住整个请求
+      3. 异常处理只在重试全部用尽后才生效,所以重试期间一条日志都没有
+         —— 表现为"业务全部成功,但调用方拿到 ReadTimeoutError"
+
+    所以这里显式收紧超时和重试次数。报告上传是增强项,
+    宁可丢链接也不能拖垮整次自检。
+    """
     if not settings.artifact_bucket:
         return ""
     key = posixpath.join(
         "outputs", actor_id or "anonymous", session_id or "no-session",
         f"selftest-{report.started_at}.md",
     )
+    started = time.monotonic()
     try:
         import boto3
+        from botocore.config import Config
 
-        s3 = boto3.client("s3", region_name=settings.region)
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.region,
+            config=Config(
+                connect_timeout=5,
+                read_timeout=10,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+        )
         s3.put_object(
             Bucket=settings.artifact_bucket,
             Key=key,
@@ -329,13 +352,16 @@ def _publish_report(
             ContentType="text/markdown; charset=utf-8",
             ServerSideEncryption="AES256",
         )
-        return s3.generate_presigned_url(
+        url = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": settings.artifact_bucket, "Key": key},
             ExpiresIn=3600,
         )
+        LOG.info("自检报告已上传(%.1fs)", time.monotonic() - started)
+        return url
     except Exception:
-        LOG.exception("上传自检报告失败")
+        LOG.exception("上传自检报告失败(%.1fs),报告仍在响应体里",
+                      time.monotonic() - started)
         return ""
 
 
@@ -392,7 +418,18 @@ async def run_selftest(
         sp["steps_ok"] = report.ok_count
         sp["steps_failed"] = len(report.failed)
 
-    url = _publish_report(settings, report, session_id, actor_id)
+    # 放到线程里跑:这是阻塞的 boto3 调用,直接在 async entrypoint 里
+    # 执行会堵住事件循环。
+    #
+    # 注意这里【不用】asyncio.wait_for 包一层 —— to_thread 里的阻塞调用
+    # 是不可取消的,wait_for 超时只是让调用方不再等待,线程仍在后台跑到底,
+    # 进程也就迟迟不结束(实测测试会白等 30 秒)。真正的兜底是
+    # _publish_report 里给 boto3 显式配的 connect/read timeout 和重试上限,
+    # 那个是硬约束,最坏情况约 (5+10)*2 秒。
+    url = await asyncio.to_thread(
+        _publish_report, settings, report, session_id, actor_id
+    )
+
     payload = report.to_dict()
     payload["markdown"] = report.to_markdown()
     if url:
