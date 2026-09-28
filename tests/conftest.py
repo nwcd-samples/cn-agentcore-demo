@@ -272,3 +272,31 @@ def fake_ddb_factory():
 # ---------------------------------------------------------------------------
 
 os.environ.setdefault("BUSINESS_TABLE", "agentcore-cn-business")
+
+# ---------------------------------------------------------------------------
+# 防线:测试套件绝不该打真实的 DeepSeek API
+#
+# 本机 .env 里有真 key,而 os.environ.setdefault 不会覆盖它。
+# 一旦某个测试的 mock 打错了目标(比如 patch 了错误的模块属性),
+# 它就会静默地去调真实 API —— 测试"通过"了,但验的不是它声称的东西。
+# test_summarize 里真发生过这件事:有真 key 时才暴露。
+#
+# 这里在会话级别把 key 换成假值。需要真调 API 的探测请用独立脚本,
+# 不要放进 pytest。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _never_call_real_deepseek():
+    """强制把 DEEPSEEK_API_KEY 换成假值,覆盖 .env 里的真 key。"""
+    import agent.config
+
+    original = os.environ.get("DEEPSEEK_API_KEY")
+    os.environ["DEEPSEEK_API_KEY"] = "sk-test-not-a-real-key"
+    agent.config.get_settings.cache_clear()
+    yield
+    if original is None:
+        os.environ.pop("DEEPSEEK_API_KEY", None)
+    else:
+        os.environ["DEEPSEEK_API_KEY"] = original
+    agent.config.get_settings.cache_clear()

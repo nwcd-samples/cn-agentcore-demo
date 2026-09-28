@@ -198,19 +198,46 @@ class TestFailureIsolation:
 
     def test_model_failure_is_swallowed(self, memory, window, monkeypatch):
         """summarize_turns 内部吞掉模型异常并返回空串 ——
-        摘要失败不该让整轮对话失败。"""
+        摘要失败不该让整轮对话失败。
+
+        注意 patch 的目标:summarize.py 里是在函数体内
+        `from agent.model import build_model`,所以必须打
+        **agent.model.build_model**。打 summarize_mod.build_model 不生效 ——
+        那样这个测试会真的去调 DeepSeek,有真 key 时就会拿到真摘要而不是 ""。
+        """
+        import agent.model as model_mod
         import agent.summarize as summarize_mod
         from agent.memory_lite import Turn
 
-        def boom(settings=None, **kwargs):
+        def boom(*args, **kwargs):
             raise RuntimeError("DeepSeek 超时")
 
-        monkeypatch.setattr(summarize_mod, "build_model", boom, raising=False)
-        # 直接调 summarize_turns,验证它不抛
+        monkeypatch.setattr(model_mod, "build_model", boom)
         result = summarize_mod.summarize_turns(
             [Turn(role="user", content="x", created_at=1)]
         )
         assert result == ""
+
+    def test_the_patch_target_is_actually_effective(self, monkeypatch):
+        """反向对照:确认上面 patch 的目标真的被调用到了。
+
+        这条存在的理由是上面那个测试曾经打错目标(patch 了
+        summarize_mod.build_model),导致它在没有真 key 时"意外通过"
+        (取 key 先失败了),有真 key 时才暴露出它一直在打真实 API。
+        """
+        import agent.model as model_mod
+        import agent.summarize as summarize_mod
+        from agent.memory_lite import Turn
+
+        called = []
+
+        def spy(*args, **kwargs):
+            called.append(True)
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(model_mod, "build_model", spy)
+        summarize_mod.summarize_turns([Turn(role="user", content="x", created_at=1)])
+        assert called, "patch 的目标没被调用 —— 说明 patch 位置不对,测试在打真实 API"
 
     def test_no_turns_yields_empty_without_calling_model(self):
         from agent.summarize import summarize_turns
