@@ -109,6 +109,25 @@ async def invoke(payload: dict[str, Any], context: RequestContext):
     # 不经过 Strands 的路径只能靠这里。
     obs.set_session_attributes(session_id, caller.actor_id, settings.project)
 
+    # ---- 诊断:看容器实际收到了哪些请求头 ----
+    if mode == "probe-headers":
+        hdrs = (context.request_headers if context else None) or {}
+        return {
+            "header_names": sorted(hdrs),
+            "has_authorization": any(k.lower() == "authorization" for k in hdrs),
+            "resolved_actor": caller.actor_id,
+            "is_anonymous": caller.is_anonymous,
+            "username": caller.username,
+            "scopes": list(caller.scopes),
+            # 只报长度和前缀,不回显 token
+            "auth_prefix": next(
+                (v[:7] for k, v in hdrs.items() if k.lower() == "authorization"), ""
+            ),
+            "auth_len": next(
+                (len(v) for k, v in hdrs.items() if k.lower() == "authorization"), 0
+            ),
+        }
+
     # ---- 诊断:单独跑某一个自检步骤 ----
     if mode == "probe-step":
         import time as _t
