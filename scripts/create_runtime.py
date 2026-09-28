@@ -186,6 +186,10 @@ def build_create_params(
         # 这一个分区】—— 数据隔离静默失效,而且不报任何错。
         #
         # 加上之后 actor_id / username / scope 都能正常解出来。
+        #
+        # 注意:GetAgentRuntime 【不回显】这个字段(返回 null),
+        # 所以别拿 API 响应去判断它有没有配上 —— 要用 probe-headers
+        # 看容器实际收到的头。我为此白查过一轮。
         "requestHeaderConfiguration": {"requestHeaderAllowlist": ["Authorization"]},
     }
     if authorizer:
