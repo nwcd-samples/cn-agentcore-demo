@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import posixpath
@@ -128,12 +130,30 @@ class Report:
 # ---------------------------------------------------------------------------
 
 
-def _run_step(report: Report, name: str, component: str, fn) -> StepResult:
-    """跑一步。无论成败都记录并继续 —— 这是自检的核心语义。"""
+async def _run_step_async(report: Report, name: str, component: str, fn) -> StepResult:
+    """跑一步。无论成败都记录并继续 —— 这是自检的核心语义。
+
+    fn 可以是同步或 async:
+      * async 的直接 await —— Browser 这类本身就是异步的,
+        绝不能再包 asyncio.run,那会开出嵌套循环并挂死(见 _check_browser_async)
+      * 同步的丢到线程里,别卡住事件循环
+    """
+
     started = time.monotonic()
     with obs.span(f"selftest.{component}", step=name) as sp:
         try:
-            detail = fn() or ""
+            # 这些检查项是 lambda,包着同步或 async 函数。
+            # 只调用一次,再看返回值是不是可等待的 —— 用
+            # iscoroutinefunction(fn) 判断不行(lambda 本身是同步的),
+            # 调两次也不行(会重复执行探测)。
+            # 同步的检查项(boto3 调用)放到线程里,别阻塞事件循环;
+            # async 的(Browser)直接 await —— 绝不能再包 asyncio.run,
+            # 那会开出嵌套循环并挂死,见 _check_browser_async 的说明。
+            outcome = await asyncio.to_thread(fn)
+            if inspect.isawaitable(outcome):
+                # async 函数在线程里只是拿到了协程对象,回到本循环再 await
+                outcome = await outcome
+            detail = outcome or ""
             result = StepResult(
                 name=name,
                 component=component,
@@ -167,6 +187,16 @@ def _run_step(report: Report, name: str, component: str, fn) -> StepResult:
     report.steps.append(result)
     obs.add_event("selftest.step", step=name, ok=result.ok)
     return result
+
+
+def _run_step(report: Report, name: str, component: str, fn) -> StepResult:
+    """同步包装,给测试和同步调用方用。
+
+    真正的实现是 _run_step_async —— selftest 整体是 async 的,
+    但直接暴露一个 async 函数会让每个测试都要包 asyncio.run,
+    而这个函数本身不涉及嵌套事件循环的问题(它只是转发)。
+    """
+    return asyncio.run(_run_step_async(report, name, component, fn))
 
 
 class _Skip(Exception):
@@ -279,28 +309,31 @@ def _check_code_interpreter(settings: Settings) -> str:
             LOG.warning("关闭沙箱会话失败(会话会自行超时)")
 
 
-def _check_browser(settings: Settings) -> str:
-    """同步包装:selftest 整体是 async,这一步单独跑一个协程。"""
-    import asyncio
+async def _check_browser_async(settings: Settings) -> str:
+    """Browser 探测。
 
+    【必须是 async 的】早先这里写成同步函数 + asyncio.run(probe()),
+    结果整步挂死:_run_step 本身已经被 asyncio.to_thread 放进工作线程,
+    里面再 asyncio.run 就又开了一个事件循环;ExitStack 退出时
+    LazyBrowser.close() 检测到"不在循环里",于是【第三次】asyncio.run,
+    去关一个绑在已关闭循环上的 Playwright 对象 —— 直接卡住,
+    连异常日志都走不到,表现成整次自检静默超时。
+
+    Browser 工具本来就是 async 的,顺着 await 下去就行,不要自己造循环。
+    """
     if not settings.logistics_url:
         raise _Skip("LOGISTICS_URL 未配置")
 
-    async def probe() -> str:
-        import contextlib as _ctx
+    import contextlib as _ctx
 
-        from agent.tools.browser import build_browser_tools
+    from agent.tools.browser import build_browser_tools
 
-        with _ctx.ExitStack() as stack:
-            tools = {
-                t.tool_name: t for t in build_browser_tools(settings, stack)
-            }
-            result = str(await tools["track_shipment"](shipment_no="SF7758291046"))
-        if "查询失败" in result or "无法查询" in result:
-            raise RuntimeError(result[:200])
-        return f"抓到页面内容 {len(result)} 字符"
-
-    return asyncio.run(probe())
+    with _ctx.ExitStack() as stack:
+        tools = {t.tool_name: t for t in build_browser_tools(settings, stack)}
+        result = str(await tools["track_shipment"](shipment_no="SF7758291046"))
+    if "查询失败" in result or "无法查询" in result or "超时" in result:
+        raise RuntimeError(result[:200])
+    return f"抓到页面内容 {len(result)} 字符"
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +440,7 @@ def build_steps(settings: Settings, session_id: str, actor_id: str) -> list[tupl
         ("DeepSeek 模型调用", "Model", lambda: _check_model(settings)),
         ("MCP 工具列表", "Gateway", lambda: _check_gateway(settings)),
         ("沙箱执行", "CodeInterpreter", lambda: _check_code_interpreter(settings)),
-        ("网页抓取", "Browser", lambda: _check_browser(settings)),
+        ("网页抓取", "Browser", lambda: _check_browser_async(settings)),
     ]
 
 
@@ -418,8 +451,6 @@ async def run_selftest(
 
     整体包在一个 span 里,所以在 Observability 看板上这次自检是一条完整 trace。
     """
-    import asyncio
-
     report = Report(
         session_id=session_id,
         actor_id=actor_id,
@@ -433,8 +464,8 @@ async def run_selftest(
         report.trace_id = obs.current_trace_id()
 
         for name, component, fn in build_steps(settings, session_id, actor_id):
-            # 阻塞调用放到线程里,别卡住 Runtime 的事件循环
-            await asyncio.to_thread(_run_step, report, name, component, fn)
+            # _run_step 自己判断 fn 是同步还是 async
+            await _run_step_async(report, name, component, fn)
 
         sp["steps_total"] = len(report.steps)
         sp["steps_ok"] = report.ok_count
