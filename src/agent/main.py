@@ -109,6 +109,27 @@ async def invoke(payload: dict[str, Any], context: RequestContext):
     # 不经过 Strands 的路径只能靠这里。
     obs.set_session_attributes(session_id, caller.actor_id, settings.project)
 
+    # ---- 诊断:单独跑某一个自检步骤 ----
+    if mode == "probe-step":
+        import time as _t
+
+        want = str(payload.get("component") or "")
+        from agent.selftest import Report, _run_step_async, build_steps
+
+        rpt = Report(session_id=session_id, actor_id=caller.actor_id,
+                     region=settings.region, project=settings.project,
+                     started_at=int(_t.time()))
+        steps = [s for s in build_steps(settings, session_id, caller.actor_id)
+                 if not want or s[1] == want]
+        t0 = _t.monotonic()
+        for nm, comp, fn in steps:
+            await _run_step_async(rpt, nm, comp, fn)
+        return {
+            "requested": want or "ALL",
+            "elapsed_ms": int((_t.monotonic() - t0) * 1000),
+            "steps": [s.to_dict() for s in rpt.steps],
+        }
+
     # ---- 诊断:单独测一次 S3 写入(排查 selftest 卡在哪)----
     if mode == "probe-s3":
         import time as _t
