@@ -49,6 +49,9 @@ _MAX_TEXT_CHARS = 4000
 
 # 单次浏览器操作的超时(毫秒)
 _NAV_TIMEOUT_MS = 30_000
+# 整个 track_shipment 的上限。Playwright 的 timeout 只管单个动作,
+# 挡不住整体挂死。
+_TRACK_TIMEOUT_SECONDS = 90
 _ACTION_TIMEOUT_MS = 15_000
 
 # live view URL 的有效期上限由 SDK 限定为 300 秒
@@ -301,16 +304,30 @@ def build_browser_tools(settings: Settings, stack: contextlib.ExitStack) -> list
                 "应该是 2-4 位字母加 8-20 位数字,例如 SF7758291046。"
             )
 
+        async def _do_query() -> str:
+            page = await browser.page()
+            await page.goto(base_url + "/", wait_until="domcontentloaded")
+            await page.fill(SELECTOR_SHIPMENT_INPUT, cleaned)
+            # 点完要等导航,否则会抓到还没刷新的旧页面
+            async with page.expect_navigation(wait_until="domcontentloaded"):
+                await page.click(SELECTOR_QUERY_BUTTON)
+            return await page.inner_text("body")
+
         try:
             with obs.span("browser.track_shipment") as sp:
-                page = await browser.page()
-                await page.goto(base_url + "/", wait_until="domcontentloaded")
-                await page.fill(SELECTOR_SHIPMENT_INPUT, cleaned)
-                # 点完要等导航,否则会抓到还没刷新的旧页面
-                async with page.expect_navigation(wait_until="domcontentloaded"):
-                    await page.click(SELECTOR_QUERY_BUTTON)
-                text = await page.inner_text("body")
+                # 整步加超时上限:Playwright 自己的 timeout 只管单个动作,
+                # 挡不住"连上了但一直没响应"。任何一步都不该无限期挂着 ——
+                # 那会让调用方一路读超时,看起来像服务挂了。
+                text = await asyncio.wait_for(
+                    _do_query(), timeout=_TRACK_TIMEOUT_SECONDS
+                )
                 sp["page_chars"] = len(text or "")
+        except asyncio.TimeoutError:
+            LOG.warning("浏览器查询运单超时 shipment_no=%s", cleaned)
+            return (
+                f"物流网站查询超时(超过 {_TRACK_TIMEOUT_SECONDS} 秒)。"
+                "可以告知用户稍后重试,或改用订单里的物流状态。"
+            )
         except Exception as exc:  # noqa: BLE001
             LOG.exception("浏览器查询运单失败 shipment_no=%s", cleaned)
             return (

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +28,12 @@ def browser_mod():
 # ---------------------------------------------------------------------------
 # 假 Playwright / 假 BrowserClient
 # ---------------------------------------------------------------------------
+
+
+# Python 3.11+ 起内置 TimeoutError 就是 asyncio.TimeoutError,
+# 用它当"动作失败"会被 track_shipment 的超时分支截获,测不到想测的路径。
+# 这里用 Playwright 真实的异常类型。
+from playwright.async_api import Error as PlaywrightError
 
 
 class FakePage:
@@ -48,13 +55,13 @@ class FakePage:
 
     async def goto(self, url, wait_until=None):
         if self.fail_on == "goto":
-            raise TimeoutError("navigation timeout")
+            raise PlaywrightError("net::ERR_CONNECTION_REFUSED")
         self.goto_calls.append(url)
         self.url = url
 
     async def fill(self, selector, value):
         if self.fail_on == "fill":
-            raise TimeoutError(f"locator not found: {selector}")
+            raise PlaywrightError(f"locator not found: {selector}")
         self.filled[selector] = value
 
     async def click(self, selector):
@@ -73,7 +80,7 @@ class FakePage:
 
     async def inner_text(self, selector):
         if self.fail_on == "inner_text":
-            raise TimeoutError("body not found")
+            raise PlaywrightError("body not found")
         return getattr(self, "_current", self._html.get("__index__", ""))
 
 
@@ -451,7 +458,7 @@ class TestTrackShipment:
         fake_browser["page"].fail_on = "goto"
         result = str(run(tools["track_shipment"](shipment_no="SF7758291046")))
         assert "查询失败" in result
-        assert "TimeoutError" in result
+        assert "Error" in result
 
     def test_missing_selector_failure_is_reported(self, tools, fake_browser):
         fake_browser["page"].fail_on = "fill"
@@ -669,3 +676,43 @@ class TestChinaWebSocketUrlFix:
             tools_pkg.BrowserClient = original
 
         assert ".amazonaws.com.cn/" in ws_url, "修正没接到真实调用路径上"
+
+
+class TestTrackShipmentTimeout:
+    """整步超时。Playwright 自己的 timeout 只管单个动作,挡不住
+    "连上了但一直没响应" —— 实测踩过:OTEL 的 logs exporter 在中国区
+    DNS 解析失败后不断重试,把请求线程拖死,Browser 这步就无限期挂着,
+    调用方一路读超时,看起来像服务挂了。
+    """
+
+    def test_hanging_query_is_cut_off(self, browser_mod, fake_browser, monkeypatch):
+        from agent.config import get_settings
+
+        settings = get_settings()
+        object.__setattr__(settings, "logistics_url", LOGISTICS_BASE)
+        monkeypatch.setattr(browser_mod, "_TRACK_TIMEOUT_SECONDS", 0.3)
+
+        async def hang(self, url, wait_until=None):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(FakePage, "goto", hang)
+
+        with contextlib.ExitStack() as stack:
+            tools = {
+                t.tool_name: t for t in browser_mod.build_browser_tools(settings, stack)
+            }
+            result = str(run(tools["track_shipment"](shipment_no="SF7758291046")))
+
+        assert "超时" in result
+        object.__setattr__(settings, "logistics_url", "")
+
+    def test_timeout_message_tells_the_model_what_to_do(self, browser_mod):
+        """超时提示要给出替代方案,否则模型会反复重试同一个调用。"""
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "agent" / "tools" / "browser.py"
+        ).read_text()
+        assert "改用订单里的物流状态" in source
+
+    def test_timeout_is_bounded_and_reasonable(self, browser_mod):
+        assert 30 <= browser_mod._TRACK_TIMEOUT_SECONDS <= 180

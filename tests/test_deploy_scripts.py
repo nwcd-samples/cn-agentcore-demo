@@ -191,13 +191,42 @@ class TestEnvironment:
 
         扫 config.py 和 main.py 两个文件:前者读业务配置,
         后者读 LOG_LEVEL / PORT 这类进程级配置。
+
+        OTEL_* 例外:那些是给 aws-opentelemetry-distro / OTEL SDK 读的,
+        我们的代码不碰。它们在 create_runtime.py 里各自带了注释说明用途。
         """
         sources = "\n".join(
             (REPO_ROOT / "src" / "agent" / f).read_text()
             for f in ("config.py", "main.py")
         )
-        unread = [k for k in self._env(create_runtime) if f'"{k}"' not in sources]
+        unread = [
+            k
+            for k in self._env(create_runtime)
+            if f'"{k}"' not in sources and not k.startswith("OTEL_")
+        ]
         assert not unread, f"注入了但没人读的环境变量:{unread}"
+
+    def test_otel_vars_are_explained(self, create_runtime):
+        """OTEL_* 绕过了上面的检查,所以必须在源码里写清为什么注入它们 ——
+        否则后人看到一个没人读的变量会顺手删掉。
+        """
+        source = (REPO_ROOT / "scripts" / "create_runtime.py").read_text()
+        for key in (k for k in self._env(create_runtime) if k.startswith("OTEL_")):
+            assert key in source
+        # 这两个是规避中国区 SDK bug 的,理由必须写明
+        assert "logs.cn-northwest-1.amazonaws.com" in source or "aws-cn" in source
+        assert "OTEL_LOGS_EXPORTER" in source
+
+    def test_otel_logs_exporter_is_disabled(self, create_runtime):
+        """aws-opentelemetry-distro 的 logs exporter 在中国区把 endpoint
+        拼成 logs.<region>.amazonaws.com(漏了 .cn),该域名无法解析。
+        它会在后台不断重试 DNS,把请求线程拖死 —— 症状是工具调用"卡住"
+        而不是报错,调用方一路读超时。
+
+        容器日志本来就通过 stdout 进 CloudWatch,不需要再走一遍 OTLP。
+        """
+        env = self._env(create_runtime)
+        assert env.get("OTEL_LOGS_EXPORTER") == "none"
 
     def test_the_check_would_catch_a_typo(self, create_runtime):
         """反向对照:确认上面那条不是永远通过。"""

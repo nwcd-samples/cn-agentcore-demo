@@ -98,6 +98,19 @@ def build_environment(
         ),
         "DEEPSEEK_MODEL": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
         "LOG_LEVEL": os.environ.get("LOG_LEVEL", "INFO"),
+        # 【中国区 SDK bug 规避】aws-opentelemetry-distro 的 logs exporter
+        # 把 endpoint 拼成 logs.<region>.amazonaws.com,漏了 aws-cn 需要的
+        # .cn 后缀。实测该域名无法解析:
+        #   Failed to resolve 'logs.cn-northwest-1.amazonaws.com'
+        # 它会在后台不断重试 DNS,把请求线程拖死 —— 症状是工具调用"卡住"
+        # 而不是报错,客户端一路读超时。
+        #
+        # 关掉 OTLP 日志导出即可:容器日志本来就通过 stdout 进
+        # /aws/bedrock-agentcore/runtimes/*,不需要再走一遍 OTLP。
+        # trace 不受影响(走的是另一个 exporter,域名是对的),
+        # 自检里 Observability 一项仍然通过。
+        "OTEL_LOGS_EXPORTER": "none",
+        "OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED": "false",
     }
     env.update({k: v for k, v in extra.items() if v})
     # 空值不传 —— 服务端会拒绝空字符串环境变量

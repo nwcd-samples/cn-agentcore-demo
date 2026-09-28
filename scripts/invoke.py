@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,6 +190,8 @@ def main() -> int:
                         help="SigV4 入向时的 runtimeUserId")
     parser.add_argument("--jwt-token", default=os.environ.get("AGENT_JWT_TOKEN", ""),
                         help="CUSTOM_JWT 入向的 access token")
+    parser.add_argument("--timeout", type=int, default=300,
+                        help="读超时秒数。自检要启动沙箱和浏览器,默认 300")
     parser.add_argument("--wait", action="store_true",
                         help="配合 --async,轮询到任务结束")
     args = parser.parse_args()
@@ -197,7 +200,13 @@ def main() -> int:
         die("缺少 --arn(或设置 AGENT_RUNTIME_ARN)")
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
-    client = session.client("bedrock-agentcore")
+    # botocore 默认 read timeout 是 60 秒,而一次完整自检要启动沙箱和浏览器,
+    # 实测会超。Runtime 侧允许长任务,客户端不该在这里先断。
+    client = session.client(
+        "bedrock-agentcore",
+        config=BotoConfig(read_timeout=args.timeout, connect_timeout=20,
+                          retries={"max_attempts": 2, "mode": "standard"}),
+    )
     if args.jwt_token:
         attach_bearer_token(client, args.jwt_token)
 
