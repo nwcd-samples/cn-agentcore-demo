@@ -109,6 +109,34 @@ async def invoke(payload: dict[str, Any], context: RequestContext):
     # 不经过 Strands 的路径只能靠这里。
     obs.set_session_attributes(session_id, caller.actor_id, settings.project)
 
+    # ---- 诊断:WorkloadAccessToken 里有什么 claim ----
+    if mode == "probe-wat":
+        import base64 as _b64
+        import json as _json
+
+        hdrs = (context.request_headers if context else None) or {}
+        raw = next((v for k, v in hdrs.items()
+                    if k.lower() == "workloadaccesstoken"), "")
+        out: dict[str, Any] = {"present": bool(raw), "len": len(raw)}
+        if raw:
+            parts = raw.split(".")
+            out["segments"] = len(parts)
+            if len(parts) >= 2:
+                try:
+                    pad = "=" * (-len(parts[1]) % 4)
+                    claims = _json.loads(_b64.urlsafe_b64decode(parts[1] + pad))
+                    # 只列 claim 名和非敏感值,不回显整个 token
+                    out["claim_names"] = sorted(claims)
+                    out["claims"] = {
+                        k: v for k, v in claims.items()
+                        if k in ("sub", "actor_id", "username", "scope", "aud",
+                                 "iss", "client_id", "token_use", "uid",
+                                 "user_id", "userId", "principal")
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    out["decode_error"] = type(exc).__name__
+        return out
+
     # ---- 诊断:看容器实际收到了哪些请求头 ----
     if mode == "probe-headers":
         hdrs = (context.request_headers if context else None) or {}
