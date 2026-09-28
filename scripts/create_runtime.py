@@ -78,36 +78,37 @@ def stack_outputs(cfn, stack: str) -> dict[str, str]:
 
 
 def build_otel_environment(region: str) -> dict[str, str]:
-    """规避 aws-opentelemetry-distro 在中国区的 endpoint bug。
+    """关掉 aws-opentelemetry-distro 的 OTLP 导出。
 
-    这个 distro 有三处把 AWS 域名硬编码成 `.amazonaws.com`,完全没处理
-    aws-cn 分区需要的 `.cn` 后缀。三处都实测确认过(DNS 查询 + 容器日志):
+    这个 distro 在中国区有两处把 AWS 域名硬编码成 `.amazonaws.com`,
+    没处理 aws-cn 需要的 `.cn` 后缀。两处都用 DNS 验证过不存在:
 
-      1. logs exporter  -> logs.<region>.amazonaws.com   无法解析
-      2. trace exporter -> xray.<region>.amazonaws.com   无法解析
-      3. (Browser CDP URL 在 SDK 另一处,已在 agent/tools/browser.py 修)
+      logs exporter  -> logs.<region>.amazonaws.com
+      trace exporter -> xray.<region>.amazonaws.com
 
-    为什么这比"少一条 trace"严重得多:exporter 解析失败后会在后台反复重试,
-    把请求线程拖住。实测症状是 8 个自检步骤在 3 秒内全部跑完,之后调用
-    又挂了 4 分钟直到客户端读超时 —— **业务逻辑早就成功了,调用方却拿到
-    ReadTimeoutError**。这种"成功了但看起来失败"最难排查。
+    后果不是"少一条 trace":exporter 解析失败后在后台反复重试,把请求线程
+    拖住。实测 8 个自检步骤 3 秒跑完,调用又挂 4 分钟到客户端读超时 ——
+    业务逻辑早就成功了,调用方却拿到 ReadTimeoutError。
 
-    处理方式:
-      * trace 显式指向正确域名救回来(它有价值,GenAI 看板要用)
-      * logs 直接关掉(容器 stdout 本来就进 CloudWatch,OTLP 是重复的)
-      * 导出超时收紧,失败也不许拖住进程
+    【为什么不是改 endpoint】我先试过显式设
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT 指向正确的 .com.cn 域名,
+    结果换成了 `403 Forbidden` —— X-Ray 的 OTLP 端点要 SigV4 签名,
+    手工设 endpoint 会绕过 distro 自己的签名逻辑。改不通。
+
+    【为什么关掉是安全的】AgentCore Runtime 自带 Observability:
+      * 容器 stdout 已经进 /aws/bedrock-agentcore/runtimes/*
+      * trace id / span id 仍然正常生成并出现在每条日志里
+        (自检的 Observability 一项通过,拿到的是真实 trace id)
+    也就是说日志和 trace 上下文都在,只是不再由这个 distro 往 OTLP 推一份。
     """
-    suffix = ".cn" if region.startswith("cn-") else ""
     return {
-        # trace:指向正确域名
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": (
-            f"https://xray.{region}.amazonaws.com{suffix}/v1/traces"
-        ),
-        # logs:关掉,不是修 —— 容器日志已通过 stdout 进
-        # /aws/bedrock-agentcore/runtimes/*,再走一遍 OTLP 是重复的
+        # 两个 exporter 全关。distro 仍会装 instrumentation(所以
+        # trace id / span id 照常生成),只是不导出。
+        "OTEL_TRACES_EXPORTER": "none",
         "OTEL_LOGS_EXPORTER": "none",
+        "OTEL_METRICS_EXPORTER": "none",
         "OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED": "false",
-        # 导出失败不许无限期拖住请求线程
+        # 万一哪天又打开导出,别让它无限期拖住请求线程
         "OTEL_BSP_EXPORT_TIMEOUT": "5000",
         "OTEL_BSP_SCHEDULE_DELAY": "2000",
     }

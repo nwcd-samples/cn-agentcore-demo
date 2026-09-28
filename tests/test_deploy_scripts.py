@@ -217,33 +217,41 @@ class TestEnvironment:
         assert "logs.cn-northwest-1.amazonaws.com" in source or "aws-cn" in source
         assert "OTEL_LOGS_EXPORTER" in source
 
-    def test_trace_endpoint_uses_china_domain(self, create_runtime):
-        """aws-opentelemetry-distro 把 xray endpoint 拼成
-        xray.<region>.amazonaws.com,漏了 aws-cn 的 .cn(DNS 已验证不存在)。
+    def test_all_otlp_exporters_are_disabled(self, create_runtime):
+        """aws-opentelemetry-distro 在中国区把 logs / xray endpoint 都拼成
+        .amazonaws.com(漏了 .cn,DNS 验证不存在)。解析失败后它在后台反复
+        重试,把请求线程拖住 —— 实测 8 个自检步骤 3 秒跑完,调用又挂 4 分钟
+        到客户端读超时,业务成功了却看起来失败。
 
-        后果远比"少一条 trace"严重:exporter 解析失败后反复重试,把请求
-        线程拖住。实测 8 个自检步骤 3 秒跑完,调用却又挂 4 分钟到客户端
-        读超时 —— 业务成功了但看起来失败。
+        试过显式设正确的 .com.cn endpoint,换成 403 Forbidden ——
+        X-Ray 的 OTLP 端点要 SigV4,手工设 endpoint 绕过了 distro 的签名。
+        所以只能关掉导出。
         """
         env = create_runtime.build_otel_environment("cn-northwest-1")
-        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == (
-            "https://xray.cn-northwest-1.amazonaws.com.cn/v1/traces"
-        )
+        for key in ("OTEL_TRACES_EXPORTER", "OTEL_LOGS_EXPORTER",
+                    "OTEL_METRICS_EXPORTER"):
+            assert env[key] == "none", f"{key} 没关掉,会拖死请求线程"
 
-    def test_trace_endpoint_unchanged_outside_china(self, create_runtime):
-        env = create_runtime.build_otel_environment("us-west-2")
-        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == (
-            "https://xray.us-west-2.amazonaws.com/v1/traces"
+    def test_no_manual_endpoint_override(self, create_runtime):
+        """不能手工设 OTLP endpoint —— 那会绕过 distro 的 SigV4 签名,
+        换来 403 而不是解决问题。"""
+        env = create_runtime.build_otel_environment("cn-northwest-1")
+        assert not any("ENDPOINT" in k for k in env), (
+            "手工设 endpoint 会绕过 SigV4 签名,实测得到 403"
         )
-
-    def test_beijing_region_too(self, create_runtime):
-        env = create_runtime.build_otel_environment("cn-north-1")
-        assert ".amazonaws.com.cn/" in env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
 
     def test_export_timeout_is_bounded(self, create_runtime):
-        """导出失败不许无限期拖住请求线程 —— 这正是之前踩的坑。"""
+        """万一哪天重新打开导出,也不许无限期拖住请求线程。"""
         env = create_runtime.build_otel_environment("cn-northwest-1")
         assert int(env["OTEL_BSP_EXPORT_TIMEOUT"]) <= 10_000
+
+    def test_trace_context_still_works(self, create_runtime):
+        """关的只是【导出】。instrumentation 仍在装,所以 trace id / span id
+        照常生成并出现在日志里 —— 自检的 Observability 一项靠它通过。
+        """
+        env = create_runtime.build_otel_environment("cn-northwest-1")
+        # 没有关掉 instrumentation 本身的开关
+        assert "OTEL_SDK_DISABLED" not in env
 
     def test_otel_logs_exporter_is_disabled(self, create_runtime):
         """aws-opentelemetry-distro 的 logs exporter 在中国区把 endpoint
