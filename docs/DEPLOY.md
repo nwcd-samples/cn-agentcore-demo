@@ -132,29 +132,77 @@ Agent 按可用性降级 —— 某个能力还没配好,它照样能起来,只�
 拿到全景,不会在第一个错误处停下。「没配置」显示 `skipped`,「坏了」显示
 `failed` —— 这两个要分清,否则分阶段部署时报告会全是红的。
 
-## 必须在真实账号里验证的项
+## 中国区已知的 SDK 缺陷(本项目已规避)
 
-下面这些我在本地无法验证(无有效凭证),部署后请逐项确认:
+这三处都是 SDK 把 AWS 域名硬编码成 `.amazonaws.com`、没处理 `aws-cn` 分区需要的
+`.cn` 后缀。全部用 DNS 查询和容器日志实测确认过。
+
+| 位置 | 拼出来的错误域名 | 规避方式 |
+| --- | --- | --- |
+| `bedrock_agentcore._utils.endpoints.get_data_plane_endpoint()`(Browser 的 CDP 地址) | `bedrock-agentcore.<region>.amazonaws.com` | `src/agent/tools/browser.py` 的 `_fix_china_ws_url()`,幂等,SDK 修好后自动变空操作 |
+| `aws-opentelemetry-distro` 的 logs exporter | `logs.<region>.amazonaws.com` | 关掉 OTLP 日志导出,容器 stdout 本来就进 CloudWatch |
+| `aws-opentelemetry-distro` 的 trace exporter | `xray.<region>.amazonaws.com` | 关掉。试过显式指向正确域名,换来 `403 Forbidden` —— X-Ray 的 OTLP 端点要 SigV4,手工设 endpoint 会绕过 distro 自己的签名逻辑 |
+
+后两个的后果比"少一条 trace"严重得多:exporter 解析失败后在后台反复重试,
+把请求线程拖住。
+
+另外有一个**和中国区无关、但同样只在真机上才暴露**的坑,记在这里因为它花的
+排查时间最长:
+
+**绝不要跨事件循环 await Playwright 对象。** 它们绑定在创建时的那个循环上。
+早先 `LazyBrowser.close()` 是注册给 `ExitStack` 的同步回调,在 async 函数里
+unwind 时它会另开线程跑新循环去 await 清理 —— 直接挂死,不抛异常、不打日志、
+不超时。症状是 8 个自检步骤 6.6 秒全跑完,然后整次调用静默挂到客户端读超时。
+
+因为挂死不产生日志,连着六轮都定位错了地方(日志最后一行只说明"到这里还活着",
+不说明下一步是什么)。现在的做法:同步路径只停 AgentCore 会话(那是真正占沙箱、
+要计费的),Playwright 交给进程回收;异步调用方用 `AsyncExitStack` +
+`push_async_callback(aclose)`,让清理在拥有对象的那个循环里做。
+有 AST 测试断言 `close()` 里不许出现 `asyncio.run` / `new_event_loop` /
+`ThreadPoolExecutor`。
+
+## 已在真实账号里确认可用的项
+
+下面这些在 cn-northwest-1(账号实测)已确认,不需要再验:
+
+| 项 | 证据 |
+| --- | --- |
+| `bedrock-agentcore-control` / `bedrock-agentcore` 在本区可用 | `list-gateways` / `list-code-interpreter-sessions` 正常响应 |
+| KMS `RSA_2048` + `SIGN_VERIFY` | 建密钥成功,支持 6 种签名算法;`10-auth-idp.yaml` 正常建栈 |
+| 纯 stdlib DER 解析器对真实 KMS 公钥正确 | 与 `openssl` 独立解析的 modulus 逐位一致,2048 bit,e=65537 |
+| 真实 KMS 签的 JWT 能被 JWKS 公钥验过 | 篡改 payload / `alg:none` / 换密钥签 三类攻击均被正确拒绝 |
+| `aws.codeinterpreter.v1` | `status: READY`,沙箱执行 51-64 ms |
+| `aws.browser.v1` | `status: READY`,CDP 连接成功并抓到页面 366 字符 |
+| AgentCore 能拉取 `execute-api` 上的 discovery 文档 | Gateway 24 秒进 `READY`,`CUSTOM_JWT` 被接受 |
+| 自建 IdP 三种 grant | `password` / `client_credentials` / `refresh_token` 均能签出 token;错密码正确拒绝 |
+| Gateway 全链路 | 自建 IdP 签 token → 验 `CUSTOM_JWT` → 剥 `business___` 前缀 → Lambda 查 DynamoDB |
+| Runtime 容器出网到 `api.deepseek.com` | 模型返回 `pong`,完整工具循环 13 秒 |
+| Identity 出向取 DeepSeek key | 自检 Identity 一项通过,provider 名 `agentcore-cn-deepseek` |
+| Browser 沙箱出网到 `execute-api.*.amazonaws.com.cn` | 抓到物流页 366 字符 |
+| arm64 镜像 / 版本与端点灰度 | 多次 `UpdateAgentRuntime` 产生版本 1→11,`stable` 端点可钉版本 |
+
+### 部署时踩到的两个 IAM 陷阱(已修进模板)
+
+`GetResourceApiKey` / `GetResourceOauth2Token` 的授权资源**不是 token vault**,
+而是调用方的 **workload identity**:
+
+```
+arn:aws-cn:bedrock-agentcore:<region>:<acct>:workload-identity-directory/default/workload-identity/<runtime-name>
+```
+
+只授 `token-vault/*` 会让 Identity / 模型 / Gateway 三项同时 `AccessDenied`。
+
+而且这两个 action **不返回解密后的明文** —— 容器还要自己去 Secrets Manager 读
+AgentCore 托管的那条密文,所以还需要 `secretsmanager:GetSecretValue`,
+资源收敛到 `secret:bedrock-agentcore-identity!*` 前缀。
+
+## 仍需按自己环境确认的项
 
 | 项 | 怎么验 | 失败的话 |
 | --- | --- | --- |
-| KMS 非对称密钥(`RSA_2048` / `SIGN_VERIFY`)在宁夏可用 | `10-auth-idp.yaml` 能建成 | 改用 Secrets Manager 存私钥 + 给 Lambda 打 PyJWT layer |
-| AgentCore 能拉取 `execute-api` 上的 discovery 文档 | Gateway 进 `READY` 且 token 能调通 | 用 `setup_identity.py --oauth-metadata` 改成显式端点;Gateway 侧则需换成公网可达的 issuer |
-| `aws.codeinterpreter.v1` 系统 identifier 可用 | selftest 的 CodeInterpreter 一行为 `ok` | 用 `CodeInterpreter.create_code_interpreter` 建自定义的,改 `CODE_INTERPRETER_ID` |
-| `aws.browser.v1` 系统 identifier 可用 | selftest 的 Browser 一行为 `ok` | 同上,改 `BROWSER_ID` |
-| Browser 沙箱能出网访问 `execute-api.cn-northwest-1.amazonaws.com.cn` | `track_shipment` 能抓到页面 | 给 browser session 配 `proxy_configuration`,或把物流页换成沙箱可达的地址 |
-| Runtime 容器能出网访问 `api.deepseek.com` | selftest 的 Model 一行为 `ok` | 确认 `networkMode=PUBLIC`;若组织有出网管控需加白名单 |
-| CloudWatch Transaction Search 已开启 | GenAI 看板里能看到 trace | 在 CloudWatch 控制台开启;X-Ray 在中国区可用 |
-| `bedrock-agentcore` 的服务配额 | 建 Runtime / Gateway 不报 `ServiceQuotaExceeded` | 提工单加配额 |
-
-已在本地验证过的(不需要重复确认):
-
-- arm64 镜像构建、容器启动、`/ping` 返回 `Healthy`
-- 容器内 `selftest` 跑完 8 步、`opentelemetry-instrument` 装上了 provider
-- 容器到 `api.deepseek.com` 的网络与请求格式(拿到真实 401,说明只是 key 假)
-- 三个 Lambda 的 zip 内容与 CFN `Handler` 配置一一对应
-- 所有 CloudFormation 模板过 `cfn-lint`
-- Gateway / Identity / Runtime 的 boto3 参数形状(用 botocore `ParamValidator` 校验)
+| CloudWatch Transaction Search 已开启 | GenAI 看板里能看到 trace | 在 CloudWatch 控制台开启 |
+| `bedrock-agentcore` 服务配额 | 建 Runtime / Gateway 不报 `ServiceQuotaExceeded` | 提工单加配额 |
+| 组织级出网管控 | 自检的 Model / Browser 两项通过 | 给 `api.deepseek.com` 加白名单 |
 
 ## 清理
 
