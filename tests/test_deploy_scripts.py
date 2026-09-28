@@ -491,3 +491,37 @@ class TestSelftestRendering:
         assert set(payload["steps"][0]) >= {
             "component", "status", "duration_ms", "detail", "error"
         }
+
+
+class TestAuthorizationHeaderForwarding:
+    """AgentCore 验完 CUSTOM_JWT 后不会把原始 Authorization 头透给容器 ——
+    容器只收到 baggage 和一个不透明的 WorkloadAccessToken(实测 2895 字符、
+    单段、非 JWT,没有 API 能反解出身份)。
+
+    不配 requestHeaderAllowlist 的后果:identity.py 找不到 Authorization,
+    一律回落 anonymous,所有用户的长期记忆挤在 ACTOR#anonymous 一个分区里。
+    数据隔离静默失效,不报错、不告警。
+    """
+
+    def _params(self, create_runtime):
+        return make_params(create_runtime)
+
+    def test_authorization_is_allowlisted(self, create_runtime):
+        params = self._params(create_runtime)
+        allowlist = params["requestHeaderConfiguration"]["requestHeaderAllowlist"]
+        assert "Authorization" in allowlist
+
+    def test_params_still_validate(self, control_model, create_runtime):
+        assert_valid(control_model, "CreateAgentRuntime", self._params(create_runtime))
+
+    def test_reason_is_documented(self):
+        """这个配置看起来可有可无,必须写清为什么 —— 否则后人会删掉它,
+        而删掉之后没有任何报错,只是所有用户的数据悄悄混到一起。"""
+        source = (REPO_ROOT / "scripts" / "create_runtime.py").read_text()
+        assert "anonymous" in source
+        assert "WorkloadAccessToken" in source
+
+    def test_identity_module_reads_that_header(self):
+        """allowlist 放行的头名必须和 identity.py 实际查找的一致。"""
+        source = (REPO_ROOT / "src" / "agent" / "identity.py").read_text()
+        assert 'key.lower() == "authorization"' in source

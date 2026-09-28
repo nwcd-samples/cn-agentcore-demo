@@ -177,6 +177,16 @@ def build_create_params(
         # 容器暴露的是 /invocations + /ping,所以是 HTTP 而不是 MCP
         "protocolConfiguration": {"serverProtocol": "HTTP"},
         "environmentVariables": environment,
+        # 【实测必需】AgentCore 验完 CUSTOM_JWT 后【不会】把原始 Authorization
+        # 头透给容器 —— 容器只收到 baggage 和一个不透明的 WorkloadAccessToken
+        # (2895 字符、单段、非 JWT,没有任何 API 能反解出身份)。
+        #
+        # 不配这个 allowlist 的后果:identity.py 永远找不到 Authorization,
+        # 一律回落 anonymous,于是【所有用户的长期记忆共用 ACTOR#anonymous
+        # 这一个分区】—— 数据隔离静默失效,而且不报任何错。
+        #
+        # 加上之后 actor_id / username / scope 都能正常解出来。
+        "requestHeaderConfiguration": {"requestHeaderAllowlist": ["Authorization"]},
     }
     if authorizer:
         params["authorizerConfiguration"] = authorizer
