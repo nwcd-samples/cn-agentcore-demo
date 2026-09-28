@@ -249,3 +249,52 @@ class TestAsyncTask:
             "/invocations", json={"mode": "status", "taskId": accepted["taskId"]}
         ).json()
         assert final["status"] == "succeeded"
+
+
+class TestStreamToolDedup:
+    """current_tool_use 在工具调用被逐步构建时会反复触发,同一个工具能刷四五次。
+    实测流式输出里 [调用工具 business___get_order] 打了 4 遍。
+    """
+
+    def test_repeated_tool_events_yield_once(self, runtime, monkeypatch):
+        import agent.main as main
+
+        client, _, _ = runtime
+
+        async def fake_stream_events(prompt):
+            # 模拟 Strands 的真实行为:同一个工具名反复出现
+            for _ in range(4):
+                yield {"current_tool_use": {"name": "business___get_order"}}
+            yield {"data": "订单"}
+            for _ in range(3):
+                yield {"current_tool_use": {"name": "business___list_tickets"}}
+            yield {"data": "已签收"}
+
+        class FakeAgent:
+            def stream_async(self, prompt):
+                return fake_stream_events(prompt)
+
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def fake_session(**kwargs):
+            yield FakeAgent()
+
+        monkeypatch.setattr(main, "_persist_turn", lambda *a, **k: None)
+        import agent.assembly as assembly
+
+        monkeypatch.setattr(assembly, "agent_session", fake_session)
+
+        with client.stream(
+            "POST", "/invocations", json={"mode": "stream", "prompt": "x"}
+        ) as response:
+            events = [
+                json.loads(line[len("data: "):])
+                for line in response.iter_lines()
+                if line.startswith("data: ")
+            ]
+
+        tools = [e["name"] for e in events if e.get("type") == "tool"]
+        assert tools == ["business___get_order", "business___list_tickets"], (
+            f"工具名应各出现一次,实际 {tools}"
+        )

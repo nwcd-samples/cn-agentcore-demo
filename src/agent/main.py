@@ -266,6 +266,9 @@ async def _stream_agent(prompt: str, *, session_id: str, actor_id: str):
     memory = MemoryLite(settings)
 
     chunks: list[str] = []
+    # current_tool_use 会在工具调用被逐步构建的过程中【反复】触发,
+    # 同一个工具能刷四五次。只在工具名变化时才产出一帧。
+    last_tool = ""
     try:
         # with 必须包住整个 stream_async 迭代,否则工具会话会提前关闭
         async with agent_session(
@@ -281,8 +284,10 @@ async def _stream_agent(prompt: str, *, session_id: str, actor_id: str):
                 # 工具调用开始,便于前端显示"正在查订单…"
                 elif "current_tool_use" in event:
                     tool_use = event["current_tool_use"] or {}
-                    if tool_use.get("name"):
-                        yield {"type": "tool", "name": tool_use["name"]}
+                    name = tool_use.get("name") or ""
+                    if name and name != last_tool:
+                        last_tool = name
+                        yield {"type": "tool", "name": name}
     except Exception as exc:  # noqa: BLE001
         LOG.exception("流式执行失败")
         yield {"type": "error", "message": str(exc)}

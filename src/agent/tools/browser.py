@@ -120,10 +120,21 @@ class LazyBrowser:
         self._browser: Any = None
         self._page: Any = None
         self._lock = asyncio.Lock()
+        # 页面操作必须串行。Strands 会【并行】执行多个工具调用,而
+        # goto/fill/click/inner_text 都作用在同一个 Page 上 —— 两个查询
+        # 交错就会互相破坏导航状态。实测:模型同时查两个运单时,
+        # 一个成功、另一个报错(日志里两次调用只间隔 2 秒,
+        # 而单次查询要 4-8 秒,说明确实重叠了)。
+        self._nav_lock = asyncio.Lock()
 
     @property
     def started(self) -> bool:
         return self._client is not None
+
+    @property
+    def nav_lock(self) -> asyncio.Lock:
+        """页面操作的串行锁。所有动了 Page 的地方都要拿它。"""
+        return self._nav_lock
 
     def _start_session_blocking(self) -> Any:
         """boto3 调用是阻塞的,放到线程里跑,别卡住事件循环。"""
@@ -323,6 +334,11 @@ def build_browser_tools(settings: Settings, stack: contextlib.ExitStack) -> list
 
         async def _do_query() -> str:
             page = await browser.page()
+            # 串行化:并发查两个运单会在同一个 Page 上互相踩
+            async with browser.nav_lock:
+                return await _navigate_and_read(page)
+
+        async def _navigate_and_read(page: Any) -> str:
             await page.goto(base_url + "/", wait_until="domcontentloaded")
             await page.fill(SELECTOR_SHIPMENT_INPUT, cleaned)
             # 点完要等导航,否则会抓到还没刷新的旧页面
@@ -377,8 +393,9 @@ def build_browser_tools(settings: Settings, stack: contextlib.ExitStack) -> list
             )
         try:
             page = await browser.page()
-            await page.goto(url, wait_until="domcontentloaded")
-            text = await page.inner_text("body")
+            async with browser.nav_lock:
+                await page.goto(url, wait_until="domcontentloaded")
+                text = await page.inner_text("body")
         except Exception as exc:  # noqa: BLE001
             LOG.exception("打开页面失败 url=%s", url)
             return f"打开页面失败({type(exc).__name__})。"
