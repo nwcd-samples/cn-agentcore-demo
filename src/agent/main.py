@@ -77,6 +77,85 @@ async def _run_agent(prompt: str, *, session_id: str, actor_id: str) -> str:
     return answer
 
 
+async def _diagnose(
+    payload: dict[str, Any], context: RequestContext | None, caller: Any, settings: Any
+) -> dict[str, Any]:
+    """按需返回诊断信息。用 {"mode":"diagnose","what":"..."} 调。
+
+    what 取值:
+      headers  容器实际收到了哪些请求头,以及解出的 actor_id
+               —— 验证 requestHeaderAllowlist 是否生效。GetAgentRuntime
+                  不回显那个配置,这是唯一可靠的检查方式。
+      s3       单独测一次产物桶写入,分别报客户端创建和 put 的耗时
+      step     只跑某一个自检步骤:{"component":"Browser"}
+      all      以上全部(默认)
+    """
+    import time as _t
+
+    what = str(payload.get("what") or "all").lower()
+    out: dict[str, Any] = {"what": what}
+
+    if what in ("headers", "all"):
+        hdrs = (context.request_headers if context else None) or {}
+        auth = next((v for k, v in hdrs.items() if k.lower() == "authorization"), "")
+        out["headers"] = {
+            "names": sorted(hdrs),
+            "has_authorization": bool(auth),
+            # 只报长度和前缀,不回显 token
+            "auth_prefix": auth[:7],
+            "auth_len": len(auth),
+            "resolved_actor": caller.actor_id,
+            "is_anonymous": caller.is_anonymous,
+            "username": caller.username,
+            "scopes": list(caller.scopes),
+        }
+
+    if what in ("s3", "all"):
+        res: dict[str, Any] = {"bucket": settings.artifact_bucket}
+        if not settings.artifact_bucket:
+            res["skipped"] = "ARTIFACT_BUCKET 未配置"
+        else:
+            t0 = _t.monotonic()
+            try:
+                from agent.selftest import _get_s3_client
+
+                s3 = _get_s3_client(settings)
+                res["client_ms"] = int((_t.monotonic() - t0) * 1000)
+                t1 = _t.monotonic()
+                s3.put_object(
+                    Bucket=settings.artifact_bucket,
+                    Key=f"outputs/diagnose/{int(_t.time())}.txt",
+                    Body=b"diagnose", ServerSideEncryption="AES256",
+                )
+                res["put_ms"] = int((_t.monotonic() - t1) * 1000)
+                res["ok"] = True
+            except Exception as exc:  # noqa: BLE001
+                res["ok"] = False
+                res["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        out["s3"] = res
+
+    if what == "step":
+        from agent.selftest import Report, _run_step_async, build_steps
+
+        want = str(payload.get("component") or "")
+        report = Report(
+            session_id="diagnose", actor_id=caller.actor_id,
+            region=settings.region, project=settings.project,
+            started_at=int(_t.time()),
+        )
+        steps = [
+            s for s in build_steps(settings, "diagnose", caller.actor_id)
+            if not want or s[1] == want
+        ]
+        t0 = _t.monotonic()
+        for name, component, fn in steps:
+            await _run_step_async(report, name, component, fn)
+        out["elapsed_ms"] = int((_t.monotonic() - t0) * 1000)
+        out["steps"] = [s.to_dict() for s in report.steps]
+
+    return out
+
+
 def _persist_turn(memory: MemoryLite, session_id: str, prompt: str, answer: str) -> None:
     """落盘这一轮,并在超出窗口时滚动更新摘要。
 
@@ -109,101 +188,16 @@ async def invoke(payload: dict[str, Any], context: RequestContext):
     # 不经过 Strands 的路径只能靠这里。
     obs.set_session_attributes(session_id, caller.actor_id, settings.project)
 
-    # ---- 诊断:WorkloadAccessToken 里有什么 claim ----
-    if mode == "probe-wat":
-        import base64 as _b64
-        import json as _json
+    # ---- 诊断模式 ----
+    #
+    # 部署后排查用。这几项都是实际踩过坑的地方,单独探测比翻日志快:
+    #   * 挂死类故障不产生日志,只能靠"单独测一步"定位
+    #   * requestHeaderAllowlist 没配时 actor_id 静默变 anonymous,
+    #     而 GetAgentRuntime 不回显这个配置,只能从容器里看
+    if mode == "diagnose":
+        return await _diagnose(payload, context, caller, settings)
 
-        hdrs = (context.request_headers if context else None) or {}
-        raw = next((v for k, v in hdrs.items()
-                    if k.lower() == "workloadaccesstoken"), "")
-        out: dict[str, Any] = {"present": bool(raw), "len": len(raw)}
-        if raw:
-            parts = raw.split(".")
-            out["segments"] = len(parts)
-            if len(parts) >= 2:
-                try:
-                    pad = "=" * (-len(parts[1]) % 4)
-                    claims = _json.loads(_b64.urlsafe_b64decode(parts[1] + pad))
-                    # 只列 claim 名和非敏感值,不回显整个 token
-                    out["claim_names"] = sorted(claims)
-                    out["claims"] = {
-                        k: v for k, v in claims.items()
-                        if k in ("sub", "actor_id", "username", "scope", "aud",
-                                 "iss", "client_id", "token_use", "uid",
-                                 "user_id", "userId", "principal")
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    out["decode_error"] = type(exc).__name__
-        return out
-
-    # ---- 诊断:看容器实际收到了哪些请求头 ----
-    if mode == "probe-headers":
-        hdrs = (context.request_headers if context else None) or {}
-        return {
-            "header_names": sorted(hdrs),
-            "has_authorization": any(k.lower() == "authorization" for k in hdrs),
-            "resolved_actor": caller.actor_id,
-            "is_anonymous": caller.is_anonymous,
-            "username": caller.username,
-            "scopes": list(caller.scopes),
-            # 只报长度和前缀,不回显 token
-            "auth_prefix": next(
-                (v[:7] for k, v in hdrs.items() if k.lower() == "authorization"), ""
-            ),
-            "auth_len": next(
-                (len(v) for k, v in hdrs.items() if k.lower() == "authorization"), 0
-            ),
-        }
-
-    # ---- 诊断:单独跑某一个自检步骤 ----
-    if mode == "probe-step":
-        import time as _t
-
-        want = str(payload.get("component") or "")
-        from agent.selftest import Report, _run_step_async, build_steps
-
-        rpt = Report(session_id=session_id, actor_id=caller.actor_id,
-                     region=settings.region, project=settings.project,
-                     started_at=int(_t.time()))
-        steps = [s for s in build_steps(settings, session_id, caller.actor_id)
-                 if not want or s[1] == want]
-        t0 = _t.monotonic()
-        for nm, comp, fn in steps:
-            await _run_step_async(rpt, nm, comp, fn)
-        return {
-            "requested": want or "ALL",
-            "elapsed_ms": int((_t.monotonic() - t0) * 1000),
-            "steps": [s.to_dict() for s in rpt.steps],
-        }
-
-    # ---- 诊断:单独测一次 S3 写入(排查 selftest 卡在哪)----
-    if mode == "probe-s3":
-        import time as _t
-
-        result: dict[str, Any] = {"bucket": settings.artifact_bucket}
-        t0 = _t.monotonic()
-        try:
-            from agent.selftest import _get_s3_client
-
-            result["client_ms"] = int((_t.monotonic() - t0) * 1000)
-            s3 = _get_s3_client(settings)
-            t1 = _t.monotonic()
-            s3.put_object(
-                Bucket=settings.artifact_bucket,
-                Key=f"outputs/probe/{int(_t.time())}.txt",
-                Body=b"probe",
-                ServerSideEncryption="AES256",
-            )
-            result["put_ms"] = int((_t.monotonic() - t1) * 1000)
-            result["ok"] = True
-        except Exception as exc:  # noqa: BLE001
-            result["ok"] = False
-            result["error"] = f"{type(exc).__name__}: {exc}"[:300]
-            result["total_ms"] = int((_t.monotonic() - t0) * 1000)
-        return result
-
-    # ---- 任务状态查询:异步模式的配套接口 ----
+    # ---- 任务状态查询    # ---- 任务状态查询:异步模式的配套接口 ----
     if mode == "status":
         task_id = str(payload.get("taskId") or "")
         record = _async_results.get(task_id)

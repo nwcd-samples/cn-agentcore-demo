@@ -252,6 +252,26 @@ done
 S3 桶和 ECR 仓库都配了 `DeletionPolicy: Delete` + `EmptyOnDelete`,会连内容一起删。
 KMS 密钥是 `PendingWindowInDays: 7`,删栈后还有 7 天可恢复。
 
+## 诊断模式
+
+排查时用它,比翻日志快。尤其适合两类问题:挂死类故障不产生日志;
+以及 `requestHeaderAllowlist` 这种"配了但 API 不回显"的配置。
+
+```bash
+# 容器实际收到哪些头、解出的 actor_id 是什么
+#   —— 验证 requestHeaderAllowlist 是否生效的唯一可靠方式
+aws bedrock-agentcore invoke-agent-runtime ... \
+  --payload '{"mode":"diagnose","what":"headers"}'
+
+# 单独测一次产物桶写入,分别报客户端创建和 put 耗时
+--payload '{"mode":"diagnose","what":"s3"}'
+
+# 只跑某一个自检步骤,定位挂在哪
+--payload '{"mode":"diagnose","what":"step","component":"Browser"}'
+```
+
+诊断输出只报 token 的长度和前缀,不回显内容 —— 可以直接贴进工单。
+
 ## 排障
 
 **Gateway 一直 `CREATE_FAILED`** — `create_gateway.py` 会打印 `statusReasons`,

@@ -298,3 +298,72 @@ class TestStreamToolDedup:
         assert tools == ["business___get_order", "business___list_tickets"], (
             f"工具名应各出现一次,实际 {tools}"
         )
+
+
+class TestDiagnoseMode:
+    """部署后排查用的诊断模式。
+
+    存在的理由是实际踩过的坑:
+      * 挂死类故障不产生日志,只能"单独测一步"定位
+      * requestHeaderAllowlist 没配时 actor_id 静默变 anonymous,
+        而 GetAgentRuntime 不回显这个配置 —— 只能从容器里看
+    """
+
+    def test_headers_reports_resolved_actor(self, runtime):
+        client, _, _ = runtime
+        body = client.post(
+            "/invocations", json={"mode": "diagnose", "what": "headers"}
+        ).json()
+
+        h = body["headers"]
+        assert h["resolved_actor"] == "anonymous"
+        assert h["is_anonymous"] is True
+        assert h["has_authorization"] is False
+
+    def test_headers_reflects_a_real_jwt(self, runtime):
+        import base64
+
+        client, _, _ = runtime
+        claims = base64.urlsafe_b64encode(
+            json.dumps({"sub": "actor-x", "actor_id": "actor-x",
+                        "username": "u", "scope": "tools:read"}).encode()
+        ).rstrip(b"=").decode()
+        body = client.post(
+            "/invocations", json={"mode": "diagnose", "what": "headers"},
+            headers={"Authorization": f"Bearer eyJhbGciOiJSUzI1NiJ9.{claims}.sig"},
+        ).json()
+
+        h = body["headers"]
+        assert h["resolved_actor"] == "actor-x"
+        assert h["scopes"] == ["tools:read"]
+
+    def test_never_echoes_the_token(self, runtime):
+        """诊断输出可能被贴进工单,绝不能带 token。"""
+        import base64
+
+        client, _, _ = runtime
+        canary = "CANARY-secret-token-value"
+        claims = base64.urlsafe_b64encode(
+            json.dumps({"sub": "a", "note": canary}).encode()
+        ).rstrip(b"=").decode()
+        raw = client.post(
+            "/invocations", json={"mode": "diagnose", "what": "headers"},
+            headers={"Authorization": f"Bearer eyJ0.{claims}.{canary}"},
+        ).text
+
+        assert canary not in raw
+        assert "Bearer " in raw  # 只报前缀
+
+    def test_s3_skips_without_a_bucket(self, runtime):
+        client, _, _ = runtime
+        body = client.post(
+            "/invocations", json={"mode": "diagnose", "what": "s3"}
+        ).json()
+        assert "skipped" in body["s3"] or "ok" in body["s3"]
+
+    def test_unknown_what_does_not_crash(self, runtime):
+        client, _, _ = runtime
+        body = client.post(
+            "/invocations", json={"mode": "diagnose", "what": "nonsense"}
+        ).json()
+        assert body["what"] == "nonsense"
