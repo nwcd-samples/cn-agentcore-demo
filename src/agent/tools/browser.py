@@ -59,6 +59,45 @@ class BrowserToolError(RuntimeError):
     """浏览器操作失败。"""
 
 
+def _fix_china_ws_url(ws_url: str, region: str) -> str:
+    """修正 SDK 在中国区拼错的 WebSocket 域名。
+
+    【SDK bug,已实测】bedrock_agentcore._utils.endpoints.get_data_plane_endpoint()
+    把域名硬编码成:
+
+        f"https://bedrock-agentcore.{region}.amazonaws.com"
+
+    完全没处理 aws-cn 分区。generate_ws_headers() 基于它拼 wss URL,于是在
+    cn-northwest-1 得到:
+
+        wss://bedrock-agentcore.cn-northwest-1.amazonaws.com/browser-streams/...
+                                                          ↑ 少了 .cn
+        -> getaddrinfo ENOTFOUND
+
+    有意思的是同一个文件里的 _validate_endpoint_url() 白名单里【列了】
+    ".amazonaws.com.cn" —— 作者知道有这个域,只是拼 URL 时漏了。
+
+    Browser 会话本身是正常启动的(控制面走 boto3,域名由 botocore 解析,
+    botocore 的 endpoints.json 是对的),只有这个手工拼的 CDP 地址不对。
+
+    这里只在 cn-* 区且域名确实缺 .cn 时补上,其他分区原样返回。
+    SigV4 签名不受影响 —— 签名里的 host 由 SDK 自己算,我们只改连接用的 URL。
+    """
+    if not region.startswith("cn-"):
+        return ws_url
+    broken = f"bedrock-agentcore.{region}.amazonaws.com"
+    if f"{broken}.cn" in ws_url:
+        return ws_url  # SDK 已经修好了
+    if broken in ws_url:
+        fixed = ws_url.replace(broken, f"{broken}.cn", 1)
+        LOG.warning(
+            "SDK 在中国区拼错了 WebSocket 域名(缺 .cn),已修正为 %s",
+            fixed.split("/browser-streams")[0],
+        )
+        return fixed
+    return ws_url
+
+
 # ---------------------------------------------------------------------------
 # 惰性会话
 # ---------------------------------------------------------------------------
@@ -94,6 +133,8 @@ class LazyBrowser:
             viewport={"width": 1280, "height": 900},
         )
         ws_url, headers = client.generate_ws_headers()
+        # SDK 在 aws-cn 分区把域名拼错了(缺 .cn),这里兜一下
+        ws_url = _fix_china_ws_url(ws_url, self._settings.region)
         return client, ws_url, headers
 
     async def page(self) -> Any:
@@ -137,7 +178,13 @@ class LazyBrowser:
             return None
 
     async def aclose(self) -> None:
-        # 逐层关闭,每层单独 try —— 前面失败不该妨碍后面清理
+        # 逐层关闭,每层单独 try —— 前面失败不该妨碍后面清理。
+        #
+        # playwright.stop() 在"连接失败后清理"这条路径上会抛
+        #   got Future attached to a different loop
+        # 因为它内部的 transport 跑在另一个 loop 上。这不影响会话回收
+        # (下面的 client.stop() 才是真正释放沙箱的),所以降级成 debug,
+        # 不要用 exception 级别刷栈 —— 否则真正的失败会被这条噪音盖住。
         for label, closer in (
             ("browser", getattr(self._browser, "close", None)),
             ("playwright", getattr(self._playwright, "stop", None)),
@@ -146,8 +193,11 @@ class LazyBrowser:
                 continue
             try:
                 await closer()
-            except Exception:
-                LOG.exception("关闭 %s 失败", label)
+            except Exception as exc:
+                if "different loop" in str(exc):
+                    LOG.debug("关闭 %s 时遇到跨事件循环告警(可忽略)", label)
+                else:
+                    LOG.warning("关闭 %s 失败:%s", label, type(exc).__name__)
         if self._client is not None:
             try:
                 await asyncio.to_thread(self._client.stop)

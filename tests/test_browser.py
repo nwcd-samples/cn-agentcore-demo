@@ -595,3 +595,77 @@ class TestToolContract:
 
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
         assert "playwright install" not in dockerfile
+
+
+# ---------------------------------------------------------------------------
+# 中国区 WebSocket 域名修正
+# ---------------------------------------------------------------------------
+
+
+class TestChinaWebSocketUrlFix:
+    """bedrock_agentcore 的 get_data_plane_endpoint() 把域名硬编码成
+    f"https://bedrock-agentcore.{region}.amazonaws.com",没处理 aws-cn 分区。
+    generate_ws_headers() 基于它拼 wss URL,在 cn-northwest-1 得到的地址
+    缺 .cn 后缀,实测 getaddrinfo ENOTFOUND。
+
+    Browser 会话本身能正常启动(控制面走 botocore,域名是对的),
+    只有这个手工拼的 CDP 地址不对。
+    """
+
+    PATH = "/browser-streams/aws.browser.v1/sessions/01ABC/automation"
+
+    def test_adds_missing_cn_suffix(self, browser_mod):
+        broken = f"wss://bedrock-agentcore.cn-northwest-1.amazonaws.com{self.PATH}"
+        fixed = browser_mod._fix_china_ws_url(broken, "cn-northwest-1")
+        assert fixed == (
+            f"wss://bedrock-agentcore.cn-northwest-1.amazonaws.com.cn{self.PATH}"
+        )
+
+    def test_is_idempotent(self, browser_mod):
+        """SDK 哪天修好了,我们不能再补一次变成 .cn.cn。"""
+        good = f"wss://bedrock-agentcore.cn-northwest-1.amazonaws.com.cn{self.PATH}"
+        assert browser_mod._fix_china_ws_url(good, "cn-northwest-1") == good
+
+    def test_beijing_region_too(self, browser_mod):
+        broken = f"wss://bedrock-agentcore.cn-north-1.amazonaws.com{self.PATH}"
+        fixed = browser_mod._fix_china_ws_url(broken, "cn-north-1")
+        assert fixed.startswith("wss://bedrock-agentcore.cn-north-1.amazonaws.com.cn/")
+
+    @pytest.mark.parametrize("region", ["us-west-2", "eu-central-1", "ap-northeast-1"])
+    def test_global_regions_untouched(self, browser_mod, region):
+        """全球区的地址本来就是对的,绝不能动。"""
+        url = f"wss://bedrock-agentcore.{region}.amazonaws.com{self.PATH}"
+        assert browser_mod._fix_china_ws_url(url, region) == url
+
+    def test_unrecognized_host_is_left_alone(self, browser_mod):
+        """endpoint override 之类的自定义域名不该被改。"""
+        url = f"wss://my-custom-endpoint.example.com{self.PATH}"
+        assert browser_mod._fix_china_ws_url(url, "cn-northwest-1") == url
+
+    def test_fix_is_applied_on_the_real_path(self, browser_mod, fake_browser):
+        """确认 _start_session_blocking 真的调用了修正函数 ——
+        光有函数没接上等于没修。"""
+        from agent.config import get_settings
+
+        settings = get_settings()
+        object.__setattr__(settings, "region", "cn-northwest-1")
+
+        class BrokenUrlClient(FakeBrowserClient):
+            def generate_ws_headers(self):
+                return (
+                    "wss://bedrock-agentcore.cn-northwest-1.amazonaws.com"
+                    "/browser-streams/aws.browser.v1/sessions/X/automation",
+                    {"Authorization": "AWS4-HMAC-SHA256 ..."},
+                )
+
+        import bedrock_agentcore.tools as tools_pkg
+
+        original = tools_pkg.BrowserClient
+        tools_pkg.BrowserClient = BrokenUrlClient
+        try:
+            lazy = browser_mod.LazyBrowser(settings)
+            _client, ws_url, _headers = lazy._start_session_blocking()
+        finally:
+            tools_pkg.BrowserClient = original
+
+        assert ".amazonaws.com.cn/" in ws_url, "修正没接到真实调用路径上"

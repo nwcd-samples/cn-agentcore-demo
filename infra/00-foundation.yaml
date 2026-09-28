@@ -268,13 +268,35 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
               # 出向凭证:DeepSeek API Key + 自建 IdP 的 OAuth2 token
+              #
+              # 【实测纠正】这两个 action 的授权资源【不是 token vault】,
+              # 而是调用方的 workload identity。cn-northwest-1 实测报错原文:
+              #   not authorized to perform: bedrock-agentcore:GetResourceApiKey
+              #   on resource: .../workload-identity-directory/default/
+              #                workload-identity/<runtime-name>
+              # 只授 token-vault 会让所有出向凭证获取全部 AccessDenied,
+              # 症状是 Identity / 模型 / Gateway 三项同时失败。
+              # token-vault 一并保留 —— credential provider 本身挂在它下面。
               - Effect: Allow
                 Action:
                   - 'bedrock-agentcore:GetResourceApiKey'
                   - 'bedrock-agentcore:GetResourceOauth2Token'
                 Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default'
                   - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default/*'
+              # 【实测纠正之二】GetResourceApiKey / GetResourceOauth2Token 并【不是】
+              # 由 AgentCore 代为解密后把明文返回 —— 容器还要自己去
+              # Secrets Manager 读那条托管密文。少了这条权限,上面两个 action
+              # 通过了,却在下一步拿到
+              #   secretsmanager:GetSecretValue on resource:
+              #   ...secret:bedrock-agentcore-identity!default/apikey/<provider>-xxx
+              # 密文名固定以 "bedrock-agentcore-identity!" 开头(AgentCore 托管),
+              # 所以按这个前缀收敛,不开放整个 Secrets Manager。
+              - Effect: Allow
+                Action: 'secretsmanager:GetSecretValue'
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:bedrock-agentcore-identity!*'
               # Code Interpreter 沙箱
               - Effect: Allow
                 Action:
