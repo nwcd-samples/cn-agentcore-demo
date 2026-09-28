@@ -109,6 +109,32 @@ async def invoke(payload: dict[str, Any], context: RequestContext):
     # 不经过 Strands 的路径只能靠这里。
     obs.set_session_attributes(session_id, caller.actor_id, settings.project)
 
+    # ---- 诊断:单独测一次 S3 写入(排查 selftest 卡在哪)----
+    if mode == "probe-s3":
+        import time as _t
+
+        result: dict[str, Any] = {"bucket": settings.artifact_bucket}
+        t0 = _t.monotonic()
+        try:
+            from agent.selftest import _get_s3_client
+
+            result["client_ms"] = int((_t.monotonic() - t0) * 1000)
+            s3 = _get_s3_client(settings)
+            t1 = _t.monotonic()
+            s3.put_object(
+                Bucket=settings.artifact_bucket,
+                Key=f"outputs/probe/{int(_t.time())}.txt",
+                Body=b"probe",
+                ServerSideEncryption="AES256",
+            )
+            result["put_ms"] = int((_t.monotonic() - t1) * 1000)
+            result["ok"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["ok"] = False
+            result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+            result["total_ms"] = int((_t.monotonic() - t0) * 1000)
+        return result
+
     # ---- 任务状态查询:异步模式的配套接口 ----
     if mode == "status":
         task_id = str(payload.get("taskId") or "")
