@@ -378,9 +378,11 @@ class TestReportPublishingCannotStallTheRun:
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("S3 不可达")),
         )
 
-        # 异常不该冒出来,报告也不该丢
-        with pytest.raises(RuntimeError):
-            asyncio.run(run_selftest(settings, session_id="s1", actor_id="a1"))
+        # 异常必须被吞掉,报告不能丢
+        result = asyncio.run(run_selftest(settings, session_id="s1", actor_id="a1"))
+        assert result["summary"]["total"] == 8
+        assert "markdown" in result, "上传失败时报告内容必须仍在响应体里"
+        assert "reportUrl" not in result
         object.__setattr__(settings, "artifact_bucket", "")
 
     def test_publish_swallows_its_own_errors(self, settings, monkeypatch):
@@ -401,13 +403,32 @@ class TestReportPublishingCannotStallTheRun:
 
     def test_no_wait_for_around_the_upload(self):
         """不能用 asyncio.wait_for 包 to_thread —— 里面的阻塞调用不可取消,
-        超时只是让调用方不等了,线程仍跑到底,进程迟迟不退出。
-        兜底应该靠 boto3 自己的超时配置。"""
+        超时只是让调用方不等了,线程仍跑到底并拖住进程退出。
+        兜底应该靠 boto3 自己的超时配置。
+
+        用 AST 判断而不是文本搜索:源码注释里刻意解释了为什么不用
+        wait_for,文本匹配会误判。
+        """
+        import ast
+
         source = (
             Path(__file__).resolve().parents[1] / "src" / "agent" / "selftest.py"
         ).read_text()
-        assert "wait_for(\n            asyncio.to_thread(_publish_report" not in source
-        assert "asyncio.to_thread(\n        _publish_report" in source
+        tree = ast.parse(source)
+
+        run_fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_selftest"
+        )
+        calls = {
+            ast.unparse(n.func)
+            for n in ast.walk(run_fn)
+            if isinstance(n, ast.Call)
+        }
+        assert "asyncio.wait_for" not in calls, (
+            "run_selftest 里不该用 wait_for 包阻塞调用"
+        )
+        assert "asyncio.to_thread" in calls, "上传必须移出事件循环"
 
     def test_s3_client_has_explicit_timeouts(self):
         """boto3 默认没有 read timeout 且重试 5 次 —— 必须显式收紧。"""
@@ -416,7 +437,8 @@ class TestReportPublishingCannotStallTheRun:
         ).read_text()
         assert "read_timeout" in source
         assert "connect_timeout" in source
-        assert '"max_attempts": 2' in source
+        # 报告上传是增强项,不值得重试
+        assert '"max_attempts": 1' in source
 
     def test_upload_runs_off_the_event_loop(self):
         """阻塞的 boto3 调用不能直接在 async entrypoint 里跑。"""
@@ -425,3 +447,5 @@ class TestReportPublishingCannotStallTheRun:
         ).read_text()
         assert "asyncio.to_thread(" in source
         assert "_publish_report" in source
+        # 客户端必须预建复用,不能在函数里临时 boto3.client()
+        assert "_get_s3_client" in source

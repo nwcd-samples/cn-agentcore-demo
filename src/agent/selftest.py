@@ -308,22 +308,55 @@ def _check_browser(settings: Settings) -> str:
 # ---------------------------------------------------------------------------
 
 
+_S3_CLIENT: Any = None
+
+
+def _get_s3_client(settings: Settings) -> Any:
+    """拿一个配好超时的 S3 客户端,进程内复用。
+
+    刻意不在 _publish_report 内部临时 boto3.client():那样每次都要
+    加载 endpoint 数据、走一遍凭证链,这些开销在 read_timeout 的覆盖
+    范围【之外】,卡住时超时配置管不着。
+    """
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        import boto3
+        from botocore.config import Config
+
+        _S3_CLIENT = boto3.client(
+            "s3",
+            region_name=settings.region,
+            config=Config(
+                connect_timeout=3,
+                read_timeout=5,
+                # 报告上传是增强项,不值得重试
+                retries={"max_attempts": 1, "mode": "standard"},
+            ),
+        )
+    return _S3_CLIENT
+
+
 def _publish_report(
     settings: Settings, report: Report, session_id: str, actor_id: str
 ) -> str:
     """把报告写 S3 并返回预签名链接。失败返回空串 —— 报告本身还在响应体里。
 
-    【实测踩过的坑】这一步曾把整次 selftest 拖到客户端读超时:
-    8 个步骤 18 秒就全跑完了,然后这里静默挂了将近 2 分钟。
+    【实测踩过的坑,排查了四轮】这一步曾把整次 selftest 拖到客户端读超时:
+    8 个步骤 6.6 秒全跑完,然后这里静默挂住,一条日志都没有。
 
-    原因有三层叠加:
-      1. boto3 默认重试最多 5 次且指数退避,默认没有 read timeout
-      2. 这段代码在 async entrypoint 里同步阻塞执行,一慢就堵住整个请求
-      3. 异常处理只在重试全部用尽后才生效,所以重试期间一条日志都没有
-         —— 表现为"业务全部成功,但调用方拿到 ReadTimeoutError"
+    确定性证据:日志里「自检报告已上传」和「自检完成」两行都不出现,
+    而把 ARTIFACT_BUCKET 清空(让本函数直接 return)后,整次自检
+    从 6 分钟超时变成 14 秒返回。
 
-    所以这里显式收紧超时和重试次数。报告上传是增强项,
-    宁可丢链接也不能拖垮整次自检。
+    叠加的原因:
+      1. boto3 默认重试 5 次、指数退避、没有 read timeout
+      2. 在函数内部临时 boto3.client() —— 首次创建要加载 endpoint 数据
+         和解析凭证链,这部分不受 read_timeout 约束
+      3. 整个调用在 async entrypoint 里同步阻塞
+      4. except 只在重试全部用尽后才触发,期间毫无日志
+
+    所以:客户端预建复用(见 _get_s3_client)、超时收到 3/5 秒、
+    不重试、调用方用 asyncio.to_thread 移出事件循环。
     """
     if not settings.artifact_bucket:
         return ""
@@ -333,18 +366,7 @@ def _publish_report(
     )
     started = time.monotonic()
     try:
-        import boto3
-        from botocore.config import Config
-
-        s3 = boto3.client(
-            "s3",
-            region_name=settings.region,
-            config=Config(
-                connect_timeout=5,
-                read_timeout=10,
-                retries={"max_attempts": 2, "mode": "standard"},
-            ),
-        )
+        s3 = _get_s3_client(settings)
         s3.put_object(
             Bucket=settings.artifact_bucket,
             Key=key,
@@ -418,22 +440,27 @@ async def run_selftest(
         sp["steps_ok"] = report.ok_count
         sp["steps_failed"] = len(report.failed)
 
-    # 放到线程里跑:这是阻塞的 boto3 调用,直接在 async entrypoint 里
-    # 执行会堵住事件循环。
-    #
-    # 注意这里【不用】asyncio.wait_for 包一层 —— to_thread 里的阻塞调用
-    # 是不可取消的,wait_for 超时只是让调用方不再等待,线程仍在后台跑到底,
-    # 进程也就迟迟不结束(实测测试会白等 30 秒)。真正的兜底是
-    # _publish_report 里给 boto3 显式配的 connect/read timeout 和重试上限,
-    # 那个是硬约束,最坏情况约 (5+10)*2 秒。
-    url = await asyncio.to_thread(
-        _publish_report, settings, report, session_id, actor_id
-    )
-
     payload = report.to_dict()
+    # 报告内容【始终】在响应体里 —— S3 链接只是方便分享的增强项。
+    # 这个顺序很关键:先把结果装好,上传失败也不影响调用方拿到完整报告。
     payload["markdown"] = report.to_markdown()
-    if url:
-        payload["reportUrl"] = url
+
+    # 上传放在最后,而且是阻塞的 boto3 调用 -> 必须移出事件循环。
+    #
+    # 不用 asyncio.wait_for 包:to_thread 里的阻塞调用不可取消,
+    # wait_for 超时只会让调用方不再等待,线程仍跑到底并拖住进程退出
+    # (实测测试因此白等 30 秒)。真正的硬约束是 _get_s3_client 里配的
+    # connect=3 / read=5 / 不重试,最坏约 8 秒。
+    try:
+        url = await asyncio.to_thread(
+            _publish_report, settings, report, session_id, actor_id
+        )
+        if url:
+            payload["reportUrl"] = url
+    except Exception:
+        # 上传抛异常也不能让整次自检失败 —— 报告已经在 payload 里了
+        LOG.exception("上传自检报告时出错,报告仍在响应体里")
+
     LOG.info("自检完成:%d/%d 通过", report.ok_count, len(report.steps))
     return payload
 
