@@ -73,8 +73,11 @@ def get_settings() -> Settings:
         project=project,
         region=_env("AWS_REGION", "cn-northwest-1"),
         deepseek_base_url=_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-        deepseek_model=_env("DEEPSEEK_MODEL", "deepseek-chat"),
-        deepseek_reasoner_model=_env("DEEPSEEK_REASONER_MODEL", "deepseek-reasoner"),
+        # 2026-09 实测:/models 只列出 deepseek-flash 和 deepseek-v4-pro。
+        # deepseek-chat / deepseek-reasoner 仍能用但只是别名,
+        # 默认值用真实 ID,不依赖别名今后是否保留。
+        deepseek_model=_env("DEEPSEEK_MODEL", "deepseek-flash"),
+        deepseek_reasoner_model=_env("DEEPSEEK_REASONER_MODEL", "deepseek-v4-pro"),
         deepseek_api_key_provider=_env("DEEPSEEK_API_KEY_PROVIDER", f"{project}-deepseek"),
         deepseek_api_key_env=_env("DEEPSEEK_API_KEY"),
         business_table=_env("BUSINESS_TABLE", f"{project}-business"),

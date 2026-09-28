@@ -28,6 +28,43 @@ LOG = logging.getLogger(__name__)
 _cached_api_key: str | None = None
 
 
+class _DropReasoningContentWarning(logging.Filter):
+    """过滤掉 Strands 关于 reasoningContent 的那一条重复告警。
+
+    类定义在模块级而不是函数内 —— 放函数里每次调用都是一个新的类对象,
+    幂等检查用的 isinstance 永远为假,过滤器会一次次叠加上去。
+    """
+
+    TARGET = "reasoningContent is not supported in multi-turn conversations"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return self.TARGET not in record.getMessage()
+
+
+def _quiet_reasoning_content_warning() -> None:
+    """压掉 Strands 关于 reasoningContent 的重复告警。
+
+    2026-09 起 DeepSeek 所有模型都返回 reasoning_content。而工具循环本质是
+    多轮对话,Strands 每轮都会把上一轮的助手消息回传,于是每轮都撞上这条:
+
+        reasoningContent is not supported in multi-turn conversations
+        with the Chat Completions API.
+
+    读过 strands.models.openai 的源码确认:它只是 logger.warning 然后把
+    reasoningContent 从 content 里过滤掉,**不会失败**。所以这条告警对我们
+    没有信息量 —— 但一次多工具对话能刷十几条,把真正的错误淹掉,
+    在 CloudWatch 里尤其糟。
+
+    只装一个精确匹配这条消息的过滤器,不动 Strands 的其他日志。
+    """
+    logger = logging.getLogger("strands.models.openai")
+    if not any(isinstance(f, _DropReasoningContentWarning) for f in logger.filters):
+        logger.addFilter(_DropReasoningContentWarning())
+
+
+_quiet_reasoning_content_warning()
+
+
 def _fetch_api_key_from_identity(provider_name: str) -> str:
     """从 AgentCore Identity 的 token vault 取 DeepSeek API Key。
 
@@ -80,17 +117,30 @@ def build_model(
     """构造指向 DeepSeek 的 Strands 模型。
 
     Args:
-        reasoner: True 则用 deepseek-reasoner。注意它是思维链模型,
-            不建议在工具循环里用,只用于单轮深度分析。
+        reasoner: True 则用 DEEPSEEK_REASONER_MODEL(默认 deepseek-v4-pro)。
+            用于需要更强推理的单轮分析。
         stream: 是否流式。Runtime 的 SSE 路径需要 True。
+
+    2026-09 实测的 DeepSeek 现状(和早期文档不一样,改之前先重测):
+      * /models 只列出 deepseek-flash 和 deepseek-v4-pro;
+        deepseek-chat / deepseek-reasoner 仍可用但只是别名,都路由到 flash
+      * 【所有】模型都返回 reasoning_content —— 不再存在"普通模型 vs 思维链模型"
+        的区分,所以 reasoner 开关只是选一个更强的模型,不是换一类模型
+      * 三个模型都接受 temperature。早期 deepseek-reasoner 拒绝该参数,
+        现在不会了,所以不再做特殊分支
+      * flash 和 v4-pro 都支持 function calling(已用带 business___ 前缀的
+        工具名实测,能正确抽出参数)
     """
     settings = settings or get_settings()
     model_id = settings.deepseek_reasoner_model if reasoner else settings.deepseek_model
 
-    params: dict[str, Any] = {"max_tokens": settings.max_tokens}
-    if not reasoner:
-        # reasoner 不接受 temperature,传了会 400
-        params["temperature"] = settings.temperature
+    params: dict[str, Any] = {
+        # 所有模型都带思维链,reasoning token 也算进 max_tokens。
+        # 给太小会出现"content 为空但 finish_reason=stop"—— 思维链把额度吃光了。
+        # 实测 max_tokens=32 就会踩到。
+        "max_tokens": settings.max_tokens,
+        "temperature": settings.temperature,
+    }
     if extra_params:
         params.update(extra_params)
 
