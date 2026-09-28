@@ -179,7 +179,36 @@ unwind 时它会另开线程跑新循环去 await 清理 —— 直接挂死,不
 | Runtime 容器出网到 `api.deepseek.com` | 模型返回 `pong`,完整工具循环 13 秒 |
 | Identity 出向取 DeepSeek key | 自检 Identity 一项通过,provider 名 `agentcore-cn-deepseek` |
 | Browser 沙箱出网到 `execute-api.*.amazonaws.com.cn` | 抓到物流页 366 字符 |
+| 按用户的数据隔离 | 配 `requestHeaderAllowlist` 后,LTM 正确写入 `ACTOR#actor-demo-user`,`ACTOR#anonymous` 为空 |
+| 长期记忆跨会话 | 全新 session 仍能读出之前记住的两条偏好 |
+| 完整业务链路 | 查订单 → Browser 查物流 → 沙箱算赔付 → 开工单 → 记偏好,25 秒,工单 summary 含具体异常原因 |
 | arm64 镜像 / 版本与端点灰度 | 多次 `UpdateAgentRuntime` 产生版本 1→11,`stable` 端点可钉版本 |
+
+### CUSTOM_JWT 入向必须显式放行 Authorization 头
+
+AgentCore 验证完入向 JWT 后,**不会**把原始 `Authorization` 头透给容器。
+容器实际只收到两个头:`baggage` 和 `workloadaccesstoken`。而那个 WAT 是
+**不透明的**(实测 2895 字符、单段、不是 JWT),数据面也没有任何 API 能把它
+反解回身份 —— `GetWorkloadAccessToken*` 全是"用身份换 token"的单向操作。
+
+所以必须在 `CreateAgentRuntime` 里配:
+
+```python
+"requestHeaderConfiguration": {"requestHeaderAllowlist": ["Authorization"]}
+```
+
+**不配的后果是静默的**:容器解不出 `actor_id`,一律回落 `anonymous`,
+于是所有用户的长期记忆挤在 `ACTOR#anonymous` 一个分区里。不报错、不告警,
+只是数据隔离根本不存在。这个坑我是在真机上查 DynamoDB 才发现的 ——
+`FACT#notify_channel` 写在了 `ACTOR#anonymous` 而不是 `ACTOR#actor-demo-user`。
+
+配上之后容器能正常解出 `actor_id` / `username` / `scope`。
+
+### 版本切换有会话亲和性
+
+`UpdateAgentRuntime` 之后 `liveVersion` 立刻变成新版本,但**已有会话仍在旧
+容器实例上**。用同一个 `runtimeSessionId` 继续调会打到旧代码,表现成"改了没生效"。
+验证新版本时换一个全新的 session id 强制冷启动。
 
 ### 部署时踩到的两个 IAM 陷阱(已修进模板)
 
