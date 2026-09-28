@@ -716,3 +716,93 @@ class TestTrackShipmentTimeout:
 
     def test_timeout_is_bounded_and_reasonable(self, browser_mod):
         assert 30 <= browser_mod._TRACK_TIMEOUT_SECONDS <= 180
+
+
+class TestCleanupNeverCrossesEventLoops:
+    """Playwright 对象绑定在创建时的事件循环上。从别的循环 await 它们会
+    直接挂死 —— 不抛异常、不打日志、不超时。
+
+    这是 selftest 静默超时的根因,排查时因为完全没有日志,连着六轮定位错了
+    地方。早先的写法是"在循环里就开个新线程跑 asyncio.run(aclose())",
+    看着像是规避了"循环里不能 run"的限制,实际制造了跨循环 await。
+    """
+
+    def test_sync_close_does_not_spawn_a_loop(self, browser_mod):
+        """close() 里不许出现 asyncio.run / new_event_loop /
+        ThreadPoolExecutor —— 那都是跨循环 await 的前兆。"""
+        import ast
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "agent" / "tools" / "browser.py"
+        ).read_text()
+        tree = ast.parse(source)
+
+        close_fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "close"
+        )
+        calls = {ast.unparse(n.func) for n in ast.walk(close_fn)
+                 if isinstance(n, ast.Call)}
+        for forbidden in ("asyncio.run", "asyncio.new_event_loop",
+                          "concurrent.futures.ThreadPoolExecutor"):
+            assert forbidden not in calls, (
+                f"close() 用了 {forbidden},会跨事件循环 await Playwright 并挂死"
+            )
+
+    def test_sync_close_still_releases_the_paid_session(
+        self, browser_mod, fake_browser
+    ):
+        """跳过 Playwright 清理是可以的(transport 随进程回收),
+        但 AgentCore 的浏览器会话必须停 —— 那个占沙箱、要计费。"""
+        from agent.config import get_settings
+
+        lazy = browser_mod.LazyBrowser(get_settings())
+        run(lazy.page())
+        lazy.close()
+
+        assert FakeBrowserClient.instances[0].stopped is True
+        assert lazy.started is False
+
+    def test_async_stack_gets_full_cleanup(self, browser_mod, fake_browser):
+        """AsyncExitStack 能注册异步清理,这时应该走 aclose() 做完整关闭。"""
+        from agent.config import get_settings
+
+        settings = get_settings()
+        object.__setattr__(settings, "logistics_url", LOGISTICS_BASE)
+
+        async def flow():
+            async with contextlib.AsyncExitStack() as stack:
+                tools = {
+                    t.tool_name: t
+                    for t in browser_mod.build_browser_tools(settings, stack)
+                }
+                await tools["track_shipment"](shipment_no="SF7758291046")
+
+        run(flow())
+        # 完整清理:会话停掉,playwright 也 stop 了
+        assert FakeBrowserClient.instances[0].stopped is True
+        assert fake_browser["factory"].handle.stopped is True
+        object.__setattr__(settings, "logistics_url", "")
+
+    def test_async_callback_is_preferred(self, browser_mod, fake_browser):
+        """有 push_async_callback 就该用它,而不是退化成同步 close。"""
+        from agent.config import get_settings
+
+        registered: list[str] = []
+
+        class SpyStack(contextlib.AsyncExitStack):
+            def push_async_callback(self, cb, *a, **k):
+                registered.append(cb.__name__)
+                return super().push_async_callback(cb, *a, **k)
+
+            def callback(self, cb, *a, **k):
+                registered.append(cb.__name__)
+                return super().callback(cb, *a, **k)
+
+        async def flow():
+            async with SpyStack() as stack:
+                browser_mod.build_browser_tools(get_settings(), stack)
+
+        run(flow())
+        assert registered == ["aclose"], f"注册的是 {registered},应该是 aclose"

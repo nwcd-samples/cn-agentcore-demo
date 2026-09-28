@@ -9,6 +9,8 @@ Gateway 也可能还没建。这种情况下 Agent 必须照样能起来,
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -47,10 +49,13 @@ class TestGracefulDegradation:
         settings = assembly.get_settings()
         object.__setattr__(settings, "gateway_url", "")
 
-        with assembly.agent_session(
-            session_id="s1", actor_id="a1", settings=settings, stream=False
-        ) as agent:
-            names = tool_names_of(agent)
+        async def _run():
+            async with assembly.agent_session(
+                session_id="s1", actor_id="a1", settings=settings, stream=False
+            ) as agent:
+                return tool_names_of(agent)
+
+        names = asyncio.run(_run())
 
         # memory 的三个工具必须在,它只依赖 DynamoDB
         assert {"remember", "recall", "forget"} <= names
@@ -70,11 +75,14 @@ class TestGracefulDegradation:
             lambda _settings=None: (_ for _ in ()).throw(RuntimeError("Gateway 不可达")),
         )
 
-        with assembly.agent_session(
-            session_id="s1", actor_id="a1", settings=settings, stream=False
-        ) as agent:
-            # 业务工具没了,但 memory 工具还在,Agent 可用
-            assert {"remember", "recall", "forget"} <= tool_names_of(agent)
+        async def _run():
+            async with assembly.agent_session(
+                session_id="s1", actor_id="a1", settings=settings, stream=False
+            ) as agent:
+                # 业务工具没了,但 memory 工具还在,Agent 可用
+                assert {"remember", "recall", "forget"} <= tool_names_of(agent)
+
+        asyncio.run(_run())
 
         object.__setattr__(settings, "gateway_url", "")
 
@@ -115,11 +123,14 @@ class TestMcpSessionLifecycle:
             gateway_module, "load_gateway_tools", lambda _s=None: (FakeClient(), [])
         )
 
-        with assembly.agent_session(
-            session_id="s1", actor_id="a1", settings=settings, stream=False
-        ):
-            # 会话进行中不能已经被关掉
-            assert stopped == []
+        async def _run():
+            async with assembly.agent_session(
+                session_id="s1", actor_id="a1", settings=settings, stream=False
+            ):
+                # 会话进行中不能已经被关掉
+                assert stopped == []
+
+        asyncio.run(_run())
 
         assert stopped == [True], "退出 with 后必须关闭 MCP 会话"
         object.__setattr__(settings, "gateway_url", "")
@@ -141,11 +152,14 @@ class TestMcpSessionLifecycle:
             gateway_module, "load_gateway_tools", lambda _s=None: (FakeClient(), [])
         )
 
-        with pytest.raises(ValueError):
-            with assembly.agent_session(
+        async def _run():
+            async with assembly.agent_session(
                 session_id="s1", actor_id="a1", settings=settings, stream=False
             ):
                 raise ValueError("对话中途失败")
+
+        with pytest.raises(ValueError):
+            asyncio.run(_run())
 
         assert stopped == [True], "异常路径也必须关闭 MCP 会话"
         object.__setattr__(settings, "gateway_url", "")

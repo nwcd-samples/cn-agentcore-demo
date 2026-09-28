@@ -328,7 +328,10 @@ async def _check_browser_async(settings: Settings) -> str:
 
     from agent.tools.browser import build_browser_tools
 
-    with _ctx.ExitStack() as stack:
+    # AsyncExitStack 而不是 ExitStack:浏览器清理必须在拥有那些 Playwright
+    # 对象的事件循环里做。用同步 ExitStack 会退化成"只停 AgentCore 会话",
+    # 更早的版本还试图跨循环 await,直接挂死。
+    async with _ctx.AsyncExitStack() as stack:
         tools = {t.tool_name: t for t in build_browser_tools(settings, stack)}
         result = str(await tools["track_shipment"](shipment_no="SF7758291046"))
     if "查询失败" in result or "无法查询" in result or "超时" in result:

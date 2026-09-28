@@ -66,7 +66,7 @@ async def _run_agent(prompt: str, *, session_id: str, actor_id: str) -> str:
     memory = MemoryLite(settings)
 
     # with 覆盖整轮:Gateway 的 MCP 会话和沙箱会话都要活到工具调用结束
-    with agent_session(
+    async with agent_session(
         session_id=session_id, actor_id=actor_id, settings=settings,
         memory=memory, stream=False,
     ) as agent:
@@ -221,7 +221,7 @@ async def _stream_agent(prompt: str, *, session_id: str, actor_id: str):
     chunks: list[str] = []
     try:
         # with 必须包住整个 stream_async 迭代,否则工具会话会提前关闭
-        with agent_session(
+        async with agent_session(
             session_id=session_id, actor_id=actor_id, settings=settings,
             memory=memory, stream=True,
         ) as agent:

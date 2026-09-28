@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 from strands import Agent
 
@@ -55,7 +55,7 @@ def _collect_tools(
     *,
     actor_id: str,
     session_id: str,
-    stack: contextlib.ExitStack,
+    stack: contextlib.AsyncExitStack,
 ) -> list:
     """按可用性收集工具。任何一项加载失败都只记日志,不影响其他工具。
 
@@ -106,6 +106,7 @@ def _collect_tools(
             from agent.tools.gateway import load_gateway_tools
 
             client, gateway_tools = load_gateway_tools(settings)
+            # MCP client.stop 是同步的,用 callback 就行;
             # 会话必须活到本轮对话结束,否则工具调用会失败
             stack.callback(client.stop, None, None, None)
             return gateway_tools
@@ -148,20 +149,23 @@ def _build_system_prompt(memory: MemoryLite, actor_id: str, session_id: str) -> 
     return prompt
 
 
-@contextlib.contextmanager
-def agent_session(
+@contextlib.asynccontextmanager
+async def agent_session(
     *,
     session_id: str,
     actor_id: str,
     settings: Settings | None = None,
     memory: MemoryLite | None = None,
     stream: bool = True,
-) -> Iterator[Agent]:
+) -> AsyncIterator[Agent]:
     """构造一个 Agent,并在退出时清理所有下游会话(MCP / 沙箱)。"""
     settings = settings or get_settings()
     memory = memory or MemoryLite(settings)
 
-    with contextlib.ExitStack() as stack:
+    # AsyncExitStack 而不是 ExitStack:浏览器会话的清理必须在拥有那些
+    # Playwright 对象的事件循环里做 —— 跨循环 await 会直接挂死,
+    # 不抛异常也不打日志(见 tools/browser.py LazyBrowser.close 的说明)。
+    async with contextlib.AsyncExitStack() as stack:
         # 会话隔离:history 只从当前 session_id 读
         history = memory.as_strands_messages(session_id)
 

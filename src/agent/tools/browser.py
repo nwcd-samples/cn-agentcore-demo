@@ -210,23 +210,33 @@ class LazyBrowser:
         self._client = self._playwright = self._browser = self._page = None
 
     def close(self) -> None:
-        """给 ExitStack 用的同步收尾。
+        """同步收尾,给普通 ExitStack 用。
 
-        清理发生在 agent_session 退出时,那时可能已经不在事件循环里了,
-        所以两种情况都要处理。
+        【绝不跨事件循环去 await Playwright 对象】—— 它们绑定在创建时的那个
+        循环上,从别的循环 await 会直接挂死:不抛异常、不打日志、不超时。
+
+        这正是 selftest 静默超时的根因。早先这里的写法是"在循环里就开一个新
+        线程跑 asyncio.run(self.aclose())",看着像是规避了"循环里不能 run"的
+        限制,实际制造了更糟的问题 —— 新循环里去关属于旧循环的对象,直接卡住。
+        排查时因为完全没有日志,连着好几轮都定位错了地方。
+
+        所以这里只做那件必须做的事:停掉 AgentCore 的浏览器会话。那是 boto3
+        同步调用,也是真正占用沙箱、产生费用的东西。Playwright 的 transport
+        随进程回收,放着不管没有实际代价。
+
+        需要完整清理的异步调用方用 aclose() + AsyncExitStack —— 见
+        build_browser_tools 会自动选择。
         """
-        if not self.started:
+        if self._client is None:
+            self._browser = self._playwright = self._page = None
             return
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(self.aclose())
-            return
-        # 在事件循环里:丢到独立线程跑一个新循环,避免 await 一个同步函数
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(asyncio.run, self.aclose()).result(timeout=60)
+            self._client.stop()
+            LOG.info("Browser 会话已关闭(同步路径,跳过 Playwright 清理)")
+        except Exception:
+            LOG.warning("关闭 Browser 会话失败(会话会自行超时)")
+        finally:
+            self._client = self._playwright = self._browser = self._page = None
 
 
 # ---------------------------------------------------------------------------
@@ -276,10 +286,17 @@ def build_browser_tools(settings: Settings, stack: contextlib.ExitStack) -> list
     """构造 Browser 相关工具。
 
     Args:
-        stack: 调用方的 ExitStack,用来注册浏览器会话的清理。
+        stack: 调用方的 ExitStack 或 AsyncExitStack。
+            AsyncExitStack 能注册异步清理,Playwright 会被完整关闭;
+            普通 ExitStack 只能同步收尾(只停 AgentCore 会话,
+            见 LazyBrowser.close 里关于跨事件循环的说明)。
     """
     browser = LazyBrowser(settings)
-    stack.callback(browser.close)
+    if hasattr(stack, "push_async_callback"):
+        # 异步清理:在拥有这些对象的那个循环里关,是唯一正确的做法
+        stack.push_async_callback(browser.aclose)
+    else:
+        stack.callback(browser.close)
 
     base_url = (settings.logistics_url or "").rstrip("/")
 
