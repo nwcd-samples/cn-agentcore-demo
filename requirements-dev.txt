@@ -1,0 +1,7 @@
+# 本地开发/测试依赖,不进容器镜像。
+#
+# 刻意不用 cryptography:它在 Python 3.14 / x86_64 macOS 上没有预编译 wheel,
+# 源码构建需要 Rust 工具链。测试里的 RSA 用 tests/rsa_stub.py 的纯 Python 实现。
+pytest==9.1.1
+boto3==1.43.103
+cfn-lint==1.57.0

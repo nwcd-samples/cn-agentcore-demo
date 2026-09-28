@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  agentcore-cn P1 业务工具:给 AgentCore Gateway 当 Lambda target 的售后工具函数。
+  Gateway 本体不是 CloudFormation 资源(AWS::BedrockAgentCore::* 在中国区
+  能否用尚未实测),由 scripts/create_gateway.py 用 boto3 创建。
+
+Parameters:
+  Project:
+    Type: String
+    Default: agentcore-cn
+    Description: 必须与 00-foundation.yaml 的 Project 一致,Export 名靠它拼
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+
+Resources:
+
+  ToolsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Project}-tools'
+      RetentionInDays: !Ref LogRetentionDays
+
+  ToolsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Project}-tools-lambda'
+      Description: Execution role for the after-sales business tools Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt ToolsLogGroup.Arn
+        - PolicyName: business-table
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # 没有 Scan / DeleteItem:工具只需要读和建工单
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:PutItem'
+                Resource:
+                  - Fn::ImportValue: !Sub '${Project}-business-table-arn'
+                  - !Sub
+                    - '${TableArn}/index/*'
+                    - TableArn:
+                        Fn::ImportValue: !Sub '${Project}-business-table-arn'
+
+  ToolsFunction:
+    Type: AWS::Lambda::Function
+    # 真实代码由 scripts/deploy.sh 用 update-function-code 推,
+    # 这里只放占位,避免 CloudFormation 依赖 S3 打包顺序。
+    Properties:
+      FunctionName: !Sub '${Project}-tools'
+      Description: After-sales business tools exposed through AgentCore Gateway
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: tools_handler.lambda_handler
+      Role: !GetAtt ToolsRole.Arn
+      Timeout: 15
+      MemorySize: 512
+      LoggingConfig:
+        LogGroup: !Ref ToolsLogGroup
+      Environment:
+        Variables:
+          BUSINESS_TABLE:
+            Fn::ImportValue: !Sub '${Project}-business-table'
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"error": "placeholder, run scripts/deploy.sh"}
+
+  # Gateway 通过它的执行角色调这个函数。资源策略按角色收紧,
+  # 而不是开给整个 bedrock-agentcore 服务主体。
+  GatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ToolsFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal:
+        Fn::ImportValue: !Sub '${Project}-gateway-role-arn'
+
+Outputs:
+  ToolsFunctionName:
+    Value: !Ref ToolsFunction
+    Export:
+      Name: !Sub '${Project}-tools-function'
+  ToolsFunctionArn:
+    Value: !GetAtt ToolsFunction.Arn
+    Export:
+      Name: !Sub '${Project}-tools-function-arn'

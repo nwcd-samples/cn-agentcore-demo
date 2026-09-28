@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  agentcore-cn P0-b 自建迷你 OIDC IdP:KMS 非对称密钥 + Lambda + HTTP API。
+  中国区 AgentCore 不支持 Cognito 入向鉴权,Gateway 又禁止 "No authorization",
+  所以 CUSTOM_JWT 必须自备 issuer。
+
+Parameters:
+  Project:
+    Type: String
+    Default: agentcore-cn
+    Description: 必须与 00-foundation.yaml 的 Project 一致,Export 名靠它拼
+  AccessTokenTtl:
+    Type: Number
+    Default: 3600
+    MinValue: 300
+    MaxValue: 43200
+  RefreshTokenTtl:
+    Type: Number
+    Default: 604800
+    MinValue: 3600
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+
+Resources:
+
+  # ------------------------------------------------------------------
+  # 签名密钥。私钥永不离开 KMS,Lambda 只调 Sign / GetPublicKey。
+  # 如果 cn-northwest-1 不支持 RSA_2048 非对称密钥,这一步会建栈失败;
+  # 降级方案见 docs/DEPLOY.md(改用 Secrets Manager 存私钥 + PyJWT Layer)。
+  # ------------------------------------------------------------------
+  SigningKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: RS256 signing key for the agentcore-cn demo OIDC issuer
+      KeyUsage: SIGN_VERIFY
+      KeySpec: RSA_2048
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  SigningKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${Project}-idp-signing'
+      TargetKeyId: !Ref SigningKey
+
+  # ------------------------------------------------------------------
+  # IdP Lambda
+  # ------------------------------------------------------------------
+
+  IdpLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Project}-idp'
+      RetentionInDays: !Ref LogRetentionDays
+
+  IdpRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Project}-idp-lambda'
+      Description: Execution role for the demo OIDC issuer Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt IdpLogGroup.Arn
+        - PolicyName: sign-and-read-key
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'kms:Sign'
+                  - 'kms:Verify'
+                  - 'kms:GetPublicKey'
+                Resource: !GetAtt SigningKey.Arn
+        - PolicyName: auth-table
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                Resource:
+                  Fn::ImportValue: !Sub '${Project}-auth-table-arn'
+
+  IdpFunction:
+    Type: AWS::Lambda::Function
+    # 代码由 scripts/deploy.sh 用 aws lambda update-function-code 推上去。
+    # 这里放一个占位实现,免得 CloudFormation 依赖 S3 打包顺序。
+    Properties:
+      FunctionName: !Sub '${Project}-idp'
+      Description: Minimal OIDC issuer for the agentcore-cn demo
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: idp_handler.lambda_handler
+      Role: !GetAtt IdpRole.Arn
+      Timeout: 10
+      MemorySize: 512
+      LoggingConfig:
+        LogGroup: !Ref IdpLogGroup
+      Environment:
+        Variables:
+          AUTH_TABLE:
+            Fn::ImportValue: !Sub '${Project}-auth-table'
+          KMS_KEY_ID: !GetAtt SigningKey.Arn
+          # 先用占位值建栈,拿到 API 域名后由 deploy.sh 回填真实 issuer。
+          # issuer 必须与 discovery 文档和 token 的 iss 完全一致。
+          ISSUER: 'https://placeholder.invalid'
+          DEFAULT_AUDIENCE: !Ref Project
+          ACCESS_TOKEN_TTL: !Ref AccessTokenTtl
+          REFRESH_TOKEN_TTL: !Ref RefreshTokenTtl
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {
+                  "statusCode": 503,
+                  "headers": {"Content-Type": "application/json"},
+                  "body": '{"error":"server_error","error_description":"placeholder, run scripts/deploy.sh"}',
+              }
+
+  # ------------------------------------------------------------------
+  # HTTP API。用 $default stage,这样 issuer 就是裸域名没有 /prod 前缀,
+  # discovery 路径正好是 /.well-known/openid-configuration。
+  # ------------------------------------------------------------------
+
+  IdpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${Project}-idp'
+      Description: OIDC discovery / JWKS / token endpoints
+      ProtocolType: HTTP
+
+  IdpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref IdpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt IdpFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 10000
+
+  # 路由显式列举,不用 $default,避免把未定义路径也转给 Lambda
+  DiscoveryRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'GET /.well-known/openid-configuration'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  DiscoveryAltRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'GET /.well-known/oauth-authorization-server'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  JwksRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'GET /.well-known/jwks.json'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  TokenRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'POST /oauth2/token'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  IntrospectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'POST /oauth2/introspect'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  RevokeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'POST /oauth2/revoke'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  AuthorizeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'GET /oauth2/authorize'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  IdpApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${Project}-idp'
+      RetentionInDays: !Ref LogRetentionDays
+
+  IdpStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref IdpApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt IdpApiLogGroup.Arn
+        # 故意不记录请求体,避免密码/密钥进日志
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency","integrationError":"$context.integrationErrorMessage"}
+      DefaultRouteSettings:
+        # demo 级别的限流,防止 token 端点被暴力尝试
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  IdpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt IdpFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IdpApi}/*'
+
+Outputs:
+  IssuerUrl:
+    Description: 回填到 Lambda 的 ISSUER 环境变量,并作为 CUSTOM_JWT 的 issuer
+    Value: !Sub 'https://${IdpApi}.execute-api.${AWS::Region}.amazonaws.com.cn'
+    Export:
+      Name: !Sub '${Project}-idp-issuer'
+  DiscoveryUrl:
+    Description: AgentCore Runtime / Gateway 的 CUSTOM_JWT discoveryUrl
+    Value: !Sub 'https://${IdpApi}.execute-api.${AWS::Region}.amazonaws.com.cn/.well-known/openid-configuration'
+    Export:
+      Name: !Sub '${Project}-idp-discovery-url'
+  TokenEndpoint:
+    Value: !Sub 'https://${IdpApi}.execute-api.${AWS::Region}.amazonaws.com.cn/oauth2/token'
+    Export:
+      Name: !Sub '${Project}-idp-token-endpoint'
+  IdpFunctionName:
+    Value: !Ref IdpFunction
+    Export:
+      Name: !Sub '${Project}-idp-function'
+  SigningKeyArn:
+    Value: !GetAtt SigningKey.Arn

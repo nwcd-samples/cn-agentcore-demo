@@ -1,0 +1,20 @@
+# Runtime 容器内的依赖。版本全部锁定,避免中国区构建时拉到不兼容的新版本。
+# 解析依据见 docs/DEPS.md。
+
+bedrock-agentcore==1.23.1
+strands-agents[openai,otel]==1.57.1
+# strands-agents[openai] 约束 openai<3.0.0,必须锁 2.x
+openai==2.9.0
+# bedrock-agentcore[strands-agents] 约束 mcp<2.0.0,strands 约束 mcp<2.2
+mcp==1.23.0
+# 传递依赖,但必须显式锁:mcp 要 pyjwt[crypto] -> cryptography,
+# 而 cryptography 从 49.0.0 起只发 macOS arm64 wheel,
+# x86_64 Mac 上会退化成源码构建(需要 Rust)直接失败。
+# 48.0.0 是最后一个带 macosx universal2 wheel 的版本,锁它能让
+# 本机开发和容器用同一张依赖图。
+cryptography==48.0.0
+boto3==1.43.103
+# 只用 connect_over_cdp 连远端 Browser,无需 playwright install 下载内核
+playwright==1.63.0
+# AgentCore Observability:opentelemetry-instrument 入口
+aws-opentelemetry-distro==0.20.0

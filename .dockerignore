@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.git/
+tests/
+infra/
+scripts/
+docs/
+*.md
+.env*

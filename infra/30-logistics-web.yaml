@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  agentcore-cn P2 物流查询网页:给 AgentCore Browser 当演示靶子。
+  Lambda + HTTP API,用 execute-api 域名(不需要 ICP 备案,这是中国区选它
+  而不用 S3 静态网站托管或自定义域名的原因)。
+
+  注意:这个端点是【刻意公开】的 —— 它扮演第三方承运商的公开查询页,
+  加鉴权会让 Browser 演示失真。数据全是 seed 脚本写入的合成数据。
+  约束措施:严格的运单号格式校验 + HTTP API 限流 + 全部输出经 html.escape。
+
+Parameters:
+  Project:
+    Type: String
+    Default: agentcore-cn
+    Description: 必须与 00-foundation.yaml 的 Project 一致
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+  ThrottlingRateLimit:
+    Type: Number
+    Default: 20
+    Description: 每秒请求数上限。公开端点,别开太大。
+  ThrottlingBurstLimit:
+    Type: Number
+    Default: 40
+
+Resources:
+
+  LogisticsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Project}-logistics'
+      RetentionInDays: !Ref LogRetentionDays
+
+  LogisticsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Project}-logistics-lambda'
+      Description: Execution role for the demo carrier tracking web page
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt LogisticsLogGroup.Arn
+        - PolicyName: read-shipments
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # 只读,而且只需要 GetItem —— 这是个公开端点,权限压到最小
+              - Effect: Allow
+                Action: 'dynamodb:GetItem'
+                Resource:
+                  Fn::ImportValue: !Sub '${Project}-business-table-arn'
+
+  LogisticsFunction:
+    Type: AWS::Lambda::Function
+    # 真实代码由 scripts/deploy.sh 用 update-function-code 推
+    Properties:
+      FunctionName: !Sub '${Project}-logistics'
+      Description: Synthetic carrier tracking page used as the Browser demo target
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: logistics_handler.lambda_handler
+      Role: !GetAtt LogisticsRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      LoggingConfig:
+        LogGroup: !Ref LogisticsLogGroup
+      Environment:
+        Variables:
+          BUSINESS_TABLE:
+            Fn::ImportValue: !Sub '${Project}-business-table'
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {
+                  "statusCode": 503,
+                  "headers": {"Content-Type": "text/html; charset=utf-8"},
+                  "body": "<h1>placeholder, run scripts/deploy.sh</h1>",
+              }
+
+  LogisticsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${Project}-logistics'
+      Description: Carrier tracking page for the AgentCore Browser demo
+      ProtocolType: HTTP
+
+  LogisticsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref LogisticsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LogisticsFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 10000
+
+  # 路由显式列举,不用 $default
+  IndexRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LogisticsApi
+      RouteKey: 'GET /'
+      Target: !Sub 'integrations/${LogisticsIntegration}'
+
+  IndexHtmlRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LogisticsApi
+      RouteKey: 'GET /index.html'
+      Target: !Sub 'integrations/${LogisticsIntegration}'
+
+  TrackRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LogisticsApi
+      RouteKey: 'POST /track'
+      Target: !Sub 'integrations/${LogisticsIntegration}'
+
+  HealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LogisticsApi
+      RouteKey: 'GET /health'
+      Target: !Sub 'integrations/${LogisticsIntegration}'
+
+  LogisticsApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${Project}-logistics'
+      RetentionInDays: !Ref LogRetentionDays
+
+  LogisticsStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref LogisticsApi
+      StageName: $default
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt LogisticsApiLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latency":"$context.responseLatency","ua":"$context.identity.userAgent"}
+      DefaultRouteSettings:
+        # 公开端点,限流是必须的
+        ThrottlingBurstLimit: !Ref ThrottlingBurstLimit
+        ThrottlingRateLimit: !Ref ThrottlingRateLimit
+
+  LogisticsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LogisticsFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${LogisticsApi}/*'
+
+Outputs:
+  LogisticsUrl:
+    Description: 填进 Runtime 的 LOGISTICS_URL 环境变量
+    Value: !Sub 'https://${LogisticsApi}.execute-api.${AWS::Region}.amazonaws.com.cn'
+    Export:
+      Name: !Sub '${Project}-logistics-url'
+  LogisticsFunctionName:
+    Value: !Ref LogisticsFunction
+    Export:
+      Name: !Sub '${Project}-logistics-function'

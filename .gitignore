@@ -1,0 +1,40 @@
+# ---- 凭证与本地配置(绝不能提交)----
+.env
+.env.*
+!.env.example
+config/generated.env
+# invoke.py 存的会话 ID,属于本地状态
+.agentcore-session
+# 以防万一:任何形态的凭证文件
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+credentials.json
+*_rsa
+*_rsa.pub
+
+# ---- 写 blog 的素材,不随仓库发布 ----
+docs/LESSONS.md
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- 编辑器与系统 ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
