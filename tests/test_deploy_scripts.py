@@ -217,6 +217,34 @@ class TestEnvironment:
         assert "logs.cn-northwest-1.amazonaws.com" in source or "aws-cn" in source
         assert "OTEL_LOGS_EXPORTER" in source
 
+    def test_trace_endpoint_uses_china_domain(self, create_runtime):
+        """aws-opentelemetry-distro 把 xray endpoint 拼成
+        xray.<region>.amazonaws.com,漏了 aws-cn 的 .cn(DNS 已验证不存在)。
+
+        后果远比"少一条 trace"严重:exporter 解析失败后反复重试,把请求
+        线程拖住。实测 8 个自检步骤 3 秒跑完,调用却又挂 4 分钟到客户端
+        读超时 —— 业务成功了但看起来失败。
+        """
+        env = create_runtime.build_otel_environment("cn-northwest-1")
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == (
+            "https://xray.cn-northwest-1.amazonaws.com.cn/v1/traces"
+        )
+
+    def test_trace_endpoint_unchanged_outside_china(self, create_runtime):
+        env = create_runtime.build_otel_environment("us-west-2")
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == (
+            "https://xray.us-west-2.amazonaws.com/v1/traces"
+        )
+
+    def test_beijing_region_too(self, create_runtime):
+        env = create_runtime.build_otel_environment("cn-north-1")
+        assert ".amazonaws.com.cn/" in env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+
+    def test_export_timeout_is_bounded(self, create_runtime):
+        """导出失败不许无限期拖住请求线程 —— 这正是之前踩的坑。"""
+        env = create_runtime.build_otel_environment("cn-northwest-1")
+        assert int(env["OTEL_BSP_EXPORT_TIMEOUT"]) <= 10_000
+
     def test_otel_logs_exporter_is_disabled(self, create_runtime):
         """aws-opentelemetry-distro 的 logs exporter 在中国区把 endpoint
         拼成 logs.<region>.amazonaws.com(漏了 .cn),该域名无法解析。

@@ -77,6 +77,42 @@ def stack_outputs(cfn, stack: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def build_otel_environment(region: str) -> dict[str, str]:
+    """规避 aws-opentelemetry-distro 在中国区的 endpoint bug。
+
+    这个 distro 有三处把 AWS 域名硬编码成 `.amazonaws.com`,完全没处理
+    aws-cn 分区需要的 `.cn` 后缀。三处都实测确认过(DNS 查询 + 容器日志):
+
+      1. logs exporter  -> logs.<region>.amazonaws.com   无法解析
+      2. trace exporter -> xray.<region>.amazonaws.com   无法解析
+      3. (Browser CDP URL 在 SDK 另一处,已在 agent/tools/browser.py 修)
+
+    为什么这比"少一条 trace"严重得多:exporter 解析失败后会在后台反复重试,
+    把请求线程拖住。实测症状是 8 个自检步骤在 3 秒内全部跑完,之后调用
+    又挂了 4 分钟直到客户端读超时 —— **业务逻辑早就成功了,调用方却拿到
+    ReadTimeoutError**。这种"成功了但看起来失败"最难排查。
+
+    处理方式:
+      * trace 显式指向正确域名救回来(它有价值,GenAI 看板要用)
+      * logs 直接关掉(容器 stdout 本来就进 CloudWatch,OTLP 是重复的)
+      * 导出超时收紧,失败也不许拖住进程
+    """
+    suffix = ".cn" if region.startswith("cn-") else ""
+    return {
+        # trace:指向正确域名
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": (
+            f"https://xray.{region}.amazonaws.com{suffix}/v1/traces"
+        ),
+        # logs:关掉,不是修 —— 容器日志已通过 stdout 进
+        # /aws/bedrock-agentcore/runtimes/*,再走一遍 OTLP 是重复的
+        "OTEL_LOGS_EXPORTER": "none",
+        "OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED": "false",
+        # 导出失败不许无限期拖住请求线程
+        "OTEL_BSP_EXPORT_TIMEOUT": "5000",
+        "OTEL_BSP_SCHEDULE_DELAY": "2000",
+    }
+
+
 def build_environment(
     project: str, region: str, foundation: dict[str, str], extra: dict[str, str]
 ) -> dict[str, str]:
@@ -98,19 +134,7 @@ def build_environment(
         ),
         "DEEPSEEK_MODEL": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
         "LOG_LEVEL": os.environ.get("LOG_LEVEL", "INFO"),
-        # 【中国区 SDK bug 规避】aws-opentelemetry-distro 的 logs exporter
-        # 把 endpoint 拼成 logs.<region>.amazonaws.com,漏了 aws-cn 需要的
-        # .cn 后缀。实测该域名无法解析:
-        #   Failed to resolve 'logs.cn-northwest-1.amazonaws.com'
-        # 它会在后台不断重试 DNS,把请求线程拖死 —— 症状是工具调用"卡住"
-        # 而不是报错,客户端一路读超时。
-        #
-        # 关掉 OTLP 日志导出即可:容器日志本来就通过 stdout 进
-        # /aws/bedrock-agentcore/runtimes/*,不需要再走一遍 OTLP。
-        # trace 不受影响(走的是另一个 exporter,域名是对的),
-        # 自检里 Observability 一项仍然通过。
-        "OTEL_LOGS_EXPORTER": "none",
-        "OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED": "false",
+        **build_otel_environment(region),
     }
     env.update({k: v for k, v in extra.items() if v})
     # 空值不传 —— 服务端会拒绝空字符串环境变量
