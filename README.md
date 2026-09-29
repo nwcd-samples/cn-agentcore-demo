@@ -5,6 +5,116 @@ Amazon Bedrock AgentCore 中国区(cn-northwest-1 宁夏)全能力 demo。
 模型走 DeepSeek 官方 API,鉴权自建(Lambda + DynamoDB + KMS 迷你 OIDC IdP),
 基础设施全部 CloudFormation,除 `api.deepseek.com` 外没有任何外部服务依赖。
 
+## 架构
+
+```mermaid
+flowchart TB
+    CLI["客户端 scripts/invoke.py<br/>同步 / 流式 / 异步 / 自检"]
+
+    subgraph idp["自建 OIDC IdP —— 中国区没有 Cognito,只能自己起"]
+        direction LR
+        IDPAPI["HTTP API<br/>/oauth2/token<br/>/.well-known/jwks.json"]
+        IDPFN["Lambda · 零第三方依赖<br/>手拼 JWT"]
+        KMS["KMS RSA_2048<br/>私钥不出 KMS"]
+        AUTHDB[("DynamoDB<br/>用户/客户端/吊销")]
+        IDPAPI --> IDPFN
+        IDPFN --> KMS
+        IDPFN --> AUTHDB
+    end
+
+    subgraph runtime["AgentCore Runtime —— arm64 MicroVM"]
+        direction LR
+        APP["BedrockAgentCoreApp<br/>/invocations · /ping"] --> AGENT["Strands Agent<br/>14 个工具"]
+    end
+
+    subgraph identity["Identity · 出向凭证"]
+        direction LR
+        APIKEY["API Key<br/>DeepSeek token"]
+        OAUTH["OAuth2 CustomOauth2<br/>→ 自建 IdP"]
+    end
+
+    subgraph gw["Gateway · CUSTOM_JWT 入向"]
+        direction LR
+        GWMCP["MCP 端点"] --> TOOLSFN["Lambda target<br/>5 个业务工具"] --> BIZDB[("DynamoDB<br/>订单/工单/运单")]
+    end
+
+    subgraph sandbox["托管沙箱"]
+        direction LR
+        CI["Code Interpreter<br/>按分算赔付 · 出图"]
+        BR["Browser<br/>Playwright over CDP"]
+    end
+
+    subgraph selfhosted["自建补位设施"]
+        direction LR
+        MEM[("MemoryLite<br/>STM+TTL · 摘要 · LTM")]
+        LOGIWEB["物流查询页<br/>必须 POST 表单"]
+        S3[("S3 · 图表/报告")]
+    end
+
+    DS["api.deepseek.com<br/>唯一的外部依赖"]
+    CW["CloudWatch<br/>日志 · trace · GenAI 看板"]
+
+    CLI -- "① 换 JWT" --> IDPAPI
+    CLI -- "② Bearer JWT · InvokeAgentRuntime" --> APP
+
+    AGENT --> APIKEY
+    AGENT --> OAUTH
+    AGENT -- "Bearer M2M token" --> GWMCP
+    AGENT --> CI
+    AGENT --> BR
+    AGENT <--> MEM
+    AGENT -- "推理" --> DS
+
+    OAUTH -. "client_credentials" .-> IDPAPI
+    GWMCP -. "验签 JWKS" .-> IDPAPI
+    BR -- "填表抓页面" --> LOGIWEB
+    CI --> S3
+    APP -. "OTEL span · traceId" .-> CW
+
+    classDef cn fill:#fff4e6,stroke:#d9822b,stroke-width:2px
+    classDef aws fill:#eef6ff,stroke:#2d7ff9
+    classDef ext fill:#f3f0ff,stroke:#7c5cff,stroke-width:2px
+    class idp,selfhosted cn
+    class runtime,gw,identity,sandbox aws
+    class DS ext
+    class CW aws
+```
+
+橙色框是**因为中国区能力缺失而自建的部分**:没有 Cognito 所以自己起 OIDC issuer,
+没有 AgentCore Memory 所以用 DynamoDB 补一个 MemoryLite,物流查询页是 Browser
+的演示靶子。蓝色框是 AgentCore 原生能力。紫色是唯一的外部依赖。
+
+一次完整调用的时序:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 客户端
+    participant I as 自建 IdP
+    participant R as Runtime
+    participant Id as Identity
+    participant G as Gateway
+    participant B as Browser
+    participant C as Code Interpreter
+    participant M as MemoryLite
+
+    U->>I: password grant
+    I-->>U: JWT(含 actor_id)
+    U->>R: InvokeAgentRuntime + Bearer JWT
+    Note over R: Runtime 验签后把 Authorization<br/>透给容器(需配 requestHeaderAllowlist)
+    R->>M: 读会话历史 + 长期偏好
+    R->>Id: 取 DeepSeek key / M2M token
+    R->>G: business___get_order
+    G-->>R: 金额 · 超期小时数
+    R->>B: track_shipment 读承运商网页
+    B-->>R: 卡在西安中转中心,分拣故障
+    R->>C: 按分计算赔付
+    C-->>R: 19485 分 = 194.85 元
+    R->>G: business___create_ticket
+    R->>M: remember 通知偏好
+    R-->>U: 结论 + traceId
+```
+
 ## 中国区可用能力边界
 
 公告:https://docs.amazonaws.cn/en_us/aws/latest/userguide/bedrock-agentcore.html
