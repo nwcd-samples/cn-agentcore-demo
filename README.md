@@ -205,7 +205,7 @@ tests/       本地单元测试(不需要 AWS 凭证)
 ## 测试
 
 ```
-pytest tests/                                  # 521 个用例,不需要 AWS 凭证
+pytest tests/                                  # 547 个用例,不需要 AWS 凭证
 cfn-lint infra/*.yaml --region cn-northwest-1   # 模板离线校验
 ```
 
@@ -241,6 +241,57 @@ MemoryLite 读写、Gateway 取 token、沙箱与浏览器会话启动、selftes
 - **不往 span 里写敏感内容。** 只记长度、条数、耗时、成败。
   异常也只记类型不记 message —— 所以显式传了 `record_exception=False`,
   OTEL 的默认行为会把异常消息(里面常有订单号、用户原话)记成 span event。
+
+## 本地 Web 演示台
+
+部署完成后可以用图形化页面代替终端演示。页面文件在 `web/demo.html`,由
+`scripts/demo_web.py` 在本机提供服务；不需要额外安装前端依赖或 Web 框架。
+
+`.env` 至少要有以下已经由部署流程产生或填写的配置:
+
+- `AWS_PROFILE` / `AWS_REGION` / `PROJECT`
+- `AGENT_RUNTIME_ARN`
+- `DEMO_USERNAME` / `DEMO_PASSWORD`
+- `DEMO_CLIENT_ID` / `DEMO_CLIENT_SECRET`
+
+启动前先确认 SSO 有效,然后运行一个命令:
+
+```bash
+aws sso login --profile <你的 AWS_PROFILE>   # 已登录可跳过
+.venv/bin/python scripts/demo_web.py
+```
+
+脚本会自动读取 `.env`、从 CloudFormation 发现 IdP TokenEndpoint,并打开:
+
+```text
+http://127.0.0.1:8765
+```
+
+可选参数:
+
+```bash
+.venv/bin/python scripts/demo_web.py --port 9000
+.venv/bin/python scripts/demo_web.py --no-browser
+```
+
+页面顶部提供四种模式:
+
+- **Demo 介绍**:默认打开的客户首页,用业务语言说明 ORD-1024 场景、传统痛点、
+  方案价值、AgentCore 分层架构、6 步业务旅程及中国区能力边界,并可直达后续模式。
+- **一站式演示**:Runtime SSE 流式对话、实时工具进度、新会话和
+  `stable` / `DEFAULT` 端点切换。
+- **分步骤演示**:用同一独立会话依次演示查订单、Browser 查物流、读政策、
+  Code Interpreter 计算、工单查重/创建和 MemoryLite 记偏好。写步骤会再次确认。
+- **业务资源查看**:只读列出业务表中的订单、运单和工单。后端按字段白名单输出,
+  不读取 AuthTable / MemoryTable,也不返回 PK / SK / GSI 等存储键。
+
+页面还支持 8 项全能力自检。完整自检会写一条 MemoryLite 标记并上传 S3 报告,
+页面会在执行前确认。
+
+这是**本地演示服务**,只监听 `127.0.0.1`:AWS 凭证、IdP 客户端密钥、用户密码
+和 JWT 都留在 Python 后端,不会进入 HTML。远程客户请通过会议屏幕共享观看;不要用
+端口映射、反向代理或修改监听地址的方式把它直接暴露到公网。公网版本必须另加用户
+登录、会话授权、限流和托管后端。
 
 ## 快速开始
 

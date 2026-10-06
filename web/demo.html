@@ -1,0 +1,1223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AgentCore 智能售后演示台</title>
+  <style>
+    :root {
+      --ink: #182230;
+      --muted: #667085;
+      --line: #e4e7ec;
+      --panel: rgba(255,255,255,.92);
+      --navy: #102a43;
+      --blue: #2563eb;
+      --blue-soft: #eff6ff;
+      --orange: #e97827;
+      --orange-soft: #fff4e8;
+      --green: #11845b;
+      --green-soft: #eaf8f2;
+      --red: #c9362b;
+      --red-soft: #fff0ee;
+      --shadow: 0 18px 55px rgba(16,42,67,.10);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: #f5f7fb; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 8% 2%, rgba(37,99,235,.11), transparent 28rem),
+        radial-gradient(circle at 96% 18%, rgba(233,120,39,.11), transparent 30rem),
+        #f7f9fc;
+    }
+
+    button, textarea, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+
+    .topbar {
+      height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 30px;
+      color: white;
+      background: linear-gradient(105deg, #0b2239 0%, #123f68 62%, #1f5682 100%);
+      box-shadow: 0 5px 20px rgba(16,42,67,.18);
+    }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark {
+      display: grid; place-items: center;
+      width: 40px; height: 40px; border-radius: 12px;
+      font-weight: 800; letter-spacing: -.04em;
+      color: #17324d; background: linear-gradient(145deg,#fff,#ddebff);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.7);
+    }
+    .brand h1 { margin: 0; font-size: 18px; letter-spacing: .01em; }
+    .brand p { margin: 3px 0 0; color: #cbdcf0; font-size: 12px; }
+    .runtime-status { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #d9e7f5; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #f0b429; box-shadow: 0 0 0 5px rgba(240,180,41,.14); }
+    .status-dot.ok { background: #36d399; box-shadow: 0 0 0 5px rgba(54,211,153,.14); }
+    .status-dot.bad { background: #ff7b72; box-shadow: 0 0 0 5px rgba(255,123,114,.14); }
+
+    .page { max-width: 1480px; margin: 0 auto; padding: 22px 26px 35px; }
+
+    .story-strip {
+      display: grid;
+      grid-template-columns: 1.2fr auto 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      padding: 14px 18px;
+      border: 1px solid rgba(37,99,235,.13);
+      border-radius: 16px;
+      background: rgba(255,255,255,.76);
+      box-shadow: 0 7px 25px rgba(16,42,67,.05);
+    }
+    .story-item { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .story-icon {
+      display: grid; place-items: center; flex: 0 0 auto;
+      width: 34px; height: 34px; border-radius: 11px;
+      color: var(--blue); background: var(--blue-soft); font-weight: 800;
+    }
+    .story-item strong { display: block; font-size: 13px; }
+    .story-item small { display: block; margin-top: 2px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .story-arrow { color: #98a2b3; font-size: 19px; }
+
+    .layout { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(330px,.72fr); gap: 18px; align-items: start; }
+    .card { border: 1px solid rgba(208,213,221,.9); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; min-height: 62px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+    .card-title { display: flex; align-items: center; gap: 10px; }
+    .card-title h2 { margin: 0; font-size: 16px; }
+    .card-title p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+
+    .endpoint-select { border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; color: #344054; background: white; font-size: 12px; outline: none; }
+
+    .chat-card { min-height: 700px; display: flex; flex-direction: column; }
+    .chat-log { height: 460px; overflow-y: auto; padding: 22px; scroll-behavior: smooth; }
+    .welcome { max-width: 670px; margin: 45px auto; text-align: center; }
+    .welcome-orb {
+      display: grid; place-items: center; width: 68px; height: 68px; margin: 0 auto 18px;
+      border-radius: 22px; color: white; font-size: 27px; font-weight: 800;
+      background: linear-gradient(145deg, #2563eb, #163d72);
+      box-shadow: 0 12px 28px rgba(37,99,235,.24);
+    }
+    .welcome h2 { margin: 0; font-size: 23px; }
+    .welcome p { margin: 10px auto 20px; max-width: 560px; line-height: 1.75; color: var(--muted); font-size: 14px; }
+    .quick-prompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+    .quick-prompt { padding: 9px 12px; border: 1px solid #d6e2f5; border-radius: 999px; color: #28517a; background: #f8fbff; font-size: 12px; transition: .18s ease; }
+    .quick-prompt:hover { transform: translateY(-1px); border-color: #8db5ef; background: var(--blue-soft); }
+
+    .message { display: grid; grid-template-columns: 36px minmax(0,1fr); gap: 10px; margin-bottom: 19px; animation: rise .22s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+    .avatar { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; font-size: 12px; font-weight: 800; }
+    .message.user .avatar { color: #6b3b16; background: var(--orange-soft); }
+    .message.agent .avatar { color: #184f9d; background: var(--blue-soft); }
+    .bubble { max-width: 760px; padding: 13px 15px; border-radius: 4px 15px 15px 15px; background: #f2f5f9; line-height: 1.75; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .message.user .bubble { background: #fff7ed; }
+    .message-meta { margin-top: 6px; color: #98a2b3; font-size: 11px; }
+    .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+    .tool-chip { padding: 4px 8px; border-radius: 7px; color: #315b83; background: #e8f1fb; font-size: 11px; }
+    .typing::after { content: ""; display: inline-block; width: 7px; height: 15px; margin-left: 3px; vertical-align: -2px; background: var(--blue); animation: blink .9s infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .composer { margin-top: auto; padding: 14px 18px 18px; border-top: 1px solid var(--line); background: rgba(248,250,252,.82); }
+    .composer-box { position: relative; border: 1px solid #cdd5df; border-radius: 15px; background: white; box-shadow: 0 4px 14px rgba(16,42,67,.05); transition: .18s ease; }
+    .composer-box:focus-within { border-color: #75a7ee; box-shadow: 0 0 0 4px rgba(37,99,235,.08); }
+    textarea { display: block; width: 100%; min-height: 90px; max-height: 180px; resize: vertical; padding: 14px 15px 45px; border: 0; outline: none; color: var(--ink); background: transparent; line-height: 1.6; }
+    .composer-actions { position: absolute; left: 10px; right: 10px; bottom: 9px; display: flex; align-items: center; justify-content: space-between; }
+    .hint { color: #98a2b3; font-size: 11px; }
+    .send-button { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border: 0; border-radius: 10px; color: white; background: linear-gradient(135deg,#2563eb,#17488d); box-shadow: 0 5px 13px rgba(37,99,235,.20); font-weight: 650; font-size: 13px; }
+    .secondary-button { padding: 8px 11px; border: 1px solid var(--line); border-radius: 10px; color: #344054; background: white; font-size: 12px; }
+    .secondary-button:hover { background: #f8fafc; }
+    .composer-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 9px; color: var(--muted); font-size: 11px; }
+
+    .side { display: grid; gap: 18px; }
+    .progress-body { padding: 10px 18px 16px; }
+    .step { position: relative; display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; align-items: center; min-height: 52px; }
+    .step:not(:last-child)::after { content: ""; position: absolute; left: 14px; top: 39px; bottom: -12px; width: 1px; background: #dce1e8; }
+    .step-dot { position: relative; z-index: 1; display: grid; place-items: center; width: 29px; height: 29px; border-radius: 50%; border: 1px solid #d7dde5; color: #98a2b3; background: white; font-size: 12px; font-weight: 700; }
+    .step.running .step-dot { border-color: #86aef0; color: var(--blue); background: var(--blue-soft); animation: pulse 1.2s infinite; }
+    .step.done .step-dot { border-color: #9bd6bf; color: var(--green); background: var(--green-soft); }
+    .step.failed .step-dot { border-color: #efaaa4; color: var(--red); background: var(--red-soft); }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(37,99,235,.08); } }
+    .step strong { display: block; font-size: 13px; }
+    .step small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .step-state { color: #98a2b3; font-size: 11px; }
+    .step.running .step-state { color: var(--blue); }
+    .step.done .step-state { color: var(--green); }
+    .step.failed .step-state { color: var(--red); }
+
+    .tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 15px 18px 18px; }
+    .tech-cell { min-width: 0; padding: 10px; border: 1px solid #edf0f4; border-radius: 11px; background: #fafbfc; }
+    .tech-cell span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+    .tech-cell strong { display: block; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+
+    .capability-list { display: flex; flex-wrap: wrap; gap: 7px; padding: 15px 18px 18px; }
+    .capability { padding: 7px 9px; border-radius: 9px; font-size: 11px; }
+    .capability.native { color: #1f5796; background: var(--blue-soft); border: 1px solid #d8e8ff; }
+    .capability.custom { color: #8a4b18; background: var(--orange-soft); border: 1px solid #ffe0bd; }
+
+    .selftest-action { padding: 0 18px 18px; }
+    .selftest-button { width: 100%; padding: 10px 12px; border: 1px solid #c9d8ed; border-radius: 11px; color: #214e7a; background: #f7fbff; font-weight: 650; font-size: 12px; }
+    .selftest-button:hover { background: #edf6ff; }
+    .selftest-note { margin: 8px 1px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .selftest-results { display: none; padding: 0 18px 18px; }
+    .selftest-results.visible { display: grid; gap: 7px; }
+    .test-row { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: start; padding: 8px 9px; border-radius: 9px; background: #f8fafc; font-size: 11px; }
+    .test-row.ok .test-mark { color: var(--green); }
+    .test-row.failed .test-mark { color: var(--red); }
+    .test-row.skipped .test-mark { color: #b7791f; }
+    .test-detail { color: var(--muted); margin-top: 2px; line-height: 1.4; }
+    .test-time { color: #98a2b3; white-space: nowrap; }
+
+    .intro-hero {
+      position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0,1.35fr) minmax(300px,.65fr);
+      gap: 30px; align-items: center; padding: 42px 44px; margin-bottom: 18px;
+      border: 1px solid rgba(37,99,235,.15); border-radius: 22px;
+      color: white; background: linear-gradient(120deg,#0b2743 0%,#154f7d 60%,#2172a5 100%);
+      box-shadow: 0 22px 60px rgba(16,42,67,.18);
+    }
+    .intro-hero::after { content: ""; position: absolute; width: 390px; height: 390px; right: -120px; top: -190px; border-radius: 50%; border: 70px solid rgba(255,255,255,.055); }
+    .intro-eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid rgba(255,255,255,.22); border-radius: 999px; color: #dbeafe; background: rgba(255,255,255,.08); font-size: 11px; font-weight: 700; }
+    .intro-hero h2 { max-width: 760px; margin: 15px 0 11px; font-size: clamp(28px,3.2vw,46px); line-height: 1.18; letter-spacing: -.035em; }
+    .intro-lead { max-width: 730px; margin: 0; color: #d8e7f5; font-size: 15px; line-height: 1.85; }
+    .intro-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
+    .intro-primary, .intro-secondary { padding: 10px 15px; border-radius: 11px; font-size: 12px; font-weight: 750; }
+    .intro-primary { border: 0; color: #17456f; background: white; box-shadow: 0 7px 18px rgba(0,0,0,.14); }
+    .intro-secondary { border: 1px solid rgba(255,255,255,.35); color: white; background: rgba(255,255,255,.08); }
+    .intro-case { position: relative; z-index: 1; padding: 19px; border: 1px solid rgba(255,255,255,.19); border-radius: 17px; background: rgba(7,31,52,.36); backdrop-filter: blur(8px); }
+    .intro-case-label { color: #a9d6f5; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    .intro-case strong { display: block; margin: 8px 0 12px; font-size: 17px; }
+    .intro-case-path { display: grid; gap: 8px; }
+    .case-line { display: flex; align-items: center; gap: 9px; color: #e9f3fb; font-size: 12px; }
+    .case-line span { display: grid; place-items: center; width: 24px; height: 24px; flex: 0 0 auto; border-radius: 8px; color: #113a5c; background: #dff1ff; font-size: 10px; font-weight: 800; }
+
+    .intro-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+    .intro-section { padding: 23px; }
+    .intro-section-head { margin-bottom: 16px; }
+    .intro-section-head span { color: var(--blue); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    .intro-section-head h3 { margin: 5px 0 0; font-size: 19px; }
+    .pain-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .pain-item { padding: 13px; border: 1px solid #eceff3; border-radius: 12px; background: #fbfcfd; }
+    .pain-item b { display: block; font-size: 12px; }
+    .pain-item p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .solution-list { display: grid; gap: 10px; }
+    .solution-item { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; }
+    .solution-check { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 9px; color: var(--green); background: var(--green-soft); font-weight: 900; }
+    .solution-item b { display: block; font-size: 12px; }
+    .solution-item p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+    .architecture-card { margin-bottom: 18px; }
+    .architecture-body { padding: 22px; }
+    .architecture-map { display: grid; grid-template-columns: minmax(130px,.48fr) 35px minmax(220px,.85fr) 35px minmax(390px,1.6fr); align-items: center; gap: 8px; }
+    .arch-arrow { color: #8ba0b5; text-align: center; font-size: 24px; }
+    .arch-node { padding: 14px; border: 1px solid #dce4ed; border-radius: 13px; text-align: center; background: white; }
+    .arch-node strong { display: block; font-size: 13px; }
+    .arch-node small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .arch-node.native { border-color: #a9c7ee; background: var(--blue-soft); }
+    .arch-node.custom { border-color: #f1c99e; background: var(--orange-soft); }
+    .arch-node.external { border-color: #c8b9ee; background: #f4f0ff; }
+    .arch-runtime { padding: 17px; }
+    .arch-runtime-emblem { display: grid; place-items: center; width: 39px; height: 39px; margin: 0 auto 9px; border-radius: 12px; color: white; background: linear-gradient(145deg,#2563eb,#174b85); font-weight: 850; }
+    .arch-services { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+    .arch-dependencies { display: grid; grid-template-columns: repeat(3,1fr); gap: 9px; margin-top: 14px; padding-top: 14px; border-top: 1px dashed #d8dee7; }
+    .arch-legend { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 13px; color: var(--muted); font-size: 10px; }
+    .legend-dot { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; }
+    .legend-dot.native { background: #4f8bd8; } .legend-dot.custom { background: var(--orange); } .legend-dot.external { background: #8768cc; }
+
+    .journey { display: grid; grid-template-columns: repeat(6,1fr); gap: 8px; }
+    .journey-step { position: relative; padding: 13px 10px; border: 1px solid #e3e9ef; border-radius: 12px; background: #fbfcfe; }
+    .journey-step span { color: var(--blue); font-size: 10px; font-weight: 800; }
+    .journey-step b { display: block; margin-top: 5px; font-size: 11px; }
+    .journey-step small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+    .intro-boundary { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; padding: 12px 14px; border-radius: 11px; color: #6c4a28; background: #fff8ef; font-size: 11px; line-height: 1.6; }
+
+    .mode-tabs {
+      display: flex; gap: 7px; margin: 0 0 18px; padding: 6px;
+      width: fit-content; border: 1px solid #dfe5ec; border-radius: 14px;
+      background: rgba(255,255,255,.82); box-shadow: 0 5px 18px rgba(16,42,67,.05);
+    }
+    .mode-tab { padding: 9px 16px; border: 0; border-radius: 10px; color: #526477; background: transparent; font-size: 13px; font-weight: 650; }
+    .mode-tab.active { color: white; background: linear-gradient(135deg,#2563eb,#17488d); box-shadow: 0 5px 12px rgba(37,99,235,.18); }
+    .mode-panel { display: none; }
+    .mode-panel.active { display: block; animation: rise .2s ease-out; }
+
+    .guided-layout { display: grid; grid-template-columns: minmax(380px,.9fr) minmax(0,1.35fr); gap: 18px; align-items: start; }
+    .guided-intro { padding: 17px 19px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.7; background: linear-gradient(100deg,#f8fbff,#fffaf5); }
+    .guided-list { padding: 12px; }
+    .guided-card { display: grid; grid-template-columns: 36px 1fr auto; gap: 11px; align-items: center; padding: 13px 12px; margin-bottom: 8px; border: 1px solid #e6eaf0; border-radius: 13px; background: white; transition: .18s ease; }
+    .guided-card:hover { border-color: #b8cef0; transform: translateY(-1px); }
+    .guided-card.running { border-color: #7ca7e9; background: #f7fbff; }
+    .guided-card.done { border-color: #a9dbc8; background: #f7fcfa; }
+    .guided-card.failed { border-color: #efaaa4; background: #fff9f8; }
+    .guided-number { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; color: #25558d; background: var(--blue-soft); font-weight: 800; }
+    .guided-card.done .guided-number { color: var(--green); background: var(--green-soft); }
+    .guided-copy strong { display: block; font-size: 13px; }
+    .guided-copy small { display: block; margin-top: 4px; color: var(--muted); line-height: 1.45; font-size: 11px; }
+    .guided-run { min-width: 68px; padding: 8px 10px; border: 1px solid #cbd9ed; border-radius: 9px; color: #235487; background: #f8fbff; font-size: 11px; font-weight: 650; }
+    .guided-card.done .guided-run { color: var(--green); border-color: #b9dfd0; background: white; }
+    .guided-output { min-height: 680px; }
+    .guided-toolbar { display: flex; align-items: center; gap: 8px; }
+    .guided-session { color: var(--muted); font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .guided-log { height: 610px; padding: 17px; overflow-y: auto; }
+    .guided-empty { display: grid; place-items: center; height: 100%; text-align: center; color: var(--muted); line-height: 1.7; font-size: 13px; }
+    .guided-result { margin-bottom: 13px; padding: 14px; border: 1px solid #e3e9f0; border-radius: 13px; background: #fbfcfe; }
+    .guided-result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .guided-result-head strong { font-size: 13px; }
+    .guided-result-head span { color: var(--muted); font-size: 10px; }
+    .guided-result-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #344054; line-height: 1.7; font-size: 13px; }
+
+    .resources-card { min-height: 660px; }
+    .resource-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .resource-types { display: flex; gap: 7px; }
+    .resource-button { padding: 8px 13px; border: 1px solid #d8e0e9; border-radius: 10px; color: #41566d; background: white; font-size: 12px; font-weight: 650; }
+    .resource-button.active { color: #174e8b; border-color: #9ebde8; background: var(--blue-soft); }
+    .resource-meta { color: var(--muted); font-size: 11px; }
+    .resource-table-wrap { overflow: auto; padding: 0 18px 18px; }
+    .resource-table { width: 100%; border-collapse: collapse; min-width: 850px; }
+    .resource-table th { position: sticky; top: 0; z-index: 1; padding: 12px 10px; border-bottom: 1px solid #d9e0e8; color: #667085; background: #f8fafc; text-align: left; white-space: nowrap; font-size: 11px; text-transform: uppercase; letter-spacing: .025em; }
+    .resource-table td { padding: 12px 10px; border-bottom: 1px solid #edf0f4; color: #344054; vertical-align: top; font-size: 12px; line-height: 1.5; }
+    .resource-table tr:hover td { background: #fbfdff; }
+    .resource-id { color: #245a96; font-weight: 750; white-space: nowrap; }
+    .resource-status { display: inline-block; padding: 3px 7px; border-radius: 999px; color: #36536f; background: #eef3f7; white-space: nowrap; font-size: 10px; }
+    .resource-status.good { color: #087353; background: var(--green-soft); }
+    .resource-status.warn { color: #9a541d; background: var(--orange-soft); }
+    .resource-status.bad { color: #a8352d; background: var(--red-soft); }
+    .resource-empty { padding: 90px 20px; text-align: center; color: var(--muted); }
+    .resource-note { max-width: 330px; color: #667085; }
+    .read-only-badge { padding: 5px 8px; border-radius: 8px; color: #087353; background: var(--green-soft); font-size: 10px; font-weight: 750; }
+
+    .toast { position: fixed; right: 22px; bottom: 22px; z-index: 10; max-width: 390px; padding: 12px 15px; border-radius: 12px; color: white; background: #243b53; box-shadow: 0 14px 35px rgba(16,42,67,.26); font-size: 13px; transform: translateY(20px); opacity: 0; pointer-events: none; transition: .2s ease; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.error { background: #8f2d28; }
+
+    @media (max-width: 980px) {
+      .layout, .guided-layout, .intro-hero, .intro-grid { grid-template-columns: 1fr; }
+      .side { grid-template-columns: 1fr 1fr; }
+      .story-strip { grid-template-columns: 1fr 1fr; }
+      .story-arrow { display: none; }
+      .architecture-map { grid-template-columns: 1fr; }
+      .architecture-map > .arch-arrow { transform: rotate(90deg); }
+      .journey { grid-template-columns: repeat(3,1fr); }
+    }
+    @media (max-width: 700px) {
+      .topbar { height: auto; min-height: 70px; padding: 13px 16px; }
+      .runtime-status { display: none; }
+      .page { padding: 14px 10px 25px; }
+      .story-strip, .side, .pain-grid, .arch-dependencies { grid-template-columns: 1fr; }
+      .intro-hero { padding: 28px 22px; }
+      .intro-section, .architecture-body { padding: 17px; }
+      .arch-services, .journey { grid-template-columns: 1fr 1fr; }
+      .mode-tabs { width: 100%; overflow-x: auto; }
+      .mode-tab { flex: 0 0 auto; }
+      .chat-log { height: 420px; padding: 16px 12px; }
+      .card-head { padding: 12px 13px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">AC</div>
+      <div>
+        <h1>AgentCore 智能售后演示台</h1>
+        <p>从客户问题到业务闭环 · 中国区全能力 Demo</p>
+      </div>
+    </div>
+    <div class="runtime-status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">正在连接本地演示服务…</span>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="story-strip" aria-label="业务流程">
+      <div class="story-item"><div class="story-icon">客</div><div><strong>客户提出问题</strong><small>订单为何没到、应该赔多少</small></div></div>
+      <div class="story-arrow">→</div>
+      <div class="story-item"><div class="story-icon">A</div><div><strong>Agent 自主决策</strong><small>理解诉求并规划工具调用</small></div></div>
+      <div class="story-arrow">→</div>
+      <div class="story-item"><div class="story-icon">工</div><div><strong>受控执行业务</strong><small>查询、计算、建单、记忆</small></div></div>
+      <div class="story-arrow">→</div>
+      <div class="story-item"><div class="story-icon">✓</div><div><strong>形成售后闭环</strong><small>过程可追踪、结果可审计</small></div></div>
+    </section>
+
+    <nav class="mode-tabs" aria-label="演示模式">
+      <button class="mode-tab active" data-mode="intro">Demo 介绍</button>
+      <button class="mode-tab" data-mode="oneStop">一站式演示</button>
+      <button class="mode-tab" data-mode="guided">分步骤演示</button>
+      <button class="mode-tab" data-mode="resources">业务资源查看</button>
+    </nav>
+
+    <div class="mode-panel active" id="introPanel">
+      <section class="intro-hero">
+        <div>
+          <span class="intro-eyebrow">AMAZON BEDROCK AGENTCORE · 中国区业务实践</span>
+          <h2>让售后服务从“人工查系统”升级为“Agent 自主闭环”</h2>
+          <p class="intro-lead">客户只需描述问题，Agent 即可安全地查询订单、操作承运商网页、读取赔付政策、精确计算金额、创建工单并记住服务偏好。模型负责推理，AgentCore 负责企业级运行与治理。</p>
+          <div class="intro-actions">
+            <button class="intro-primary" data-go-mode="oneStop">开始一站式演示 →</button>
+            <button class="intro-secondary" data-go-mode="guided">按步骤理解方案</button>
+            <button class="intro-secondary" data-go-mode="resources">先看业务数据</button>
+          </div>
+        </div>
+        <div class="intro-case">
+          <span class="intro-case-label">本次 Demo 业务主线</span>
+          <strong>ORD-1024 物流严重延误</strong>
+          <div class="intro-case-path">
+            <div class="case-line"><span>1</span>查询订单与承诺送达时间</div>
+            <div class="case-line"><span>2</span>从承运商网页定位异常原因</div>
+            <div class="case-line"><span>3</span>按企业规则计算 194.85 元赔付</div>
+            <div class="case-line"><span>4</span>工单查重、创建并记录短信偏好</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="intro-grid">
+        <section class="card intro-section">
+          <div class="intro-section-head"><span>Business Pain</span><h3>传统售后为什么慢且难以治理？</h3></div>
+          <div class="pain-grid">
+            <div class="pain-item"><b>系统割裂</b><p>客服需在订单、物流、政策和工单系统间反复切换。</p></div>
+            <div class="pain-item"><b>非结构化信息</b><p>异常原因只存在于承运商网页，没有可直接调用的 API。</p></div>
+            <div class="pain-item"><b>计算容易出错</b><p>赔付涉及费率、周期、最低额和上限，不应依赖模型心算。</p></div>
+            <div class="pain-item"><b>安全与审计困难</b><p>凭证分散、工具权限不清，执行失败后难以追踪调用链。</p></div>
+          </div>
+        </section>
+        <section class="card intro-section">
+          <div class="intro-section-head"><span>Solution Value</span><h3>AgentCore 带来的解决方案</h3></div>
+          <div class="solution-list">
+            <div class="solution-item"><span class="solution-check">✓</span><div><b>一句话驱动业务闭环</b><p>Agent 自主规划，但只通过被允许的企业工具执行动作。</p></div></div>
+            <div class="solution-item"><span class="solution-check">✓</span><div><b>安全管理身份与凭证</b><p>用户 JWT、模型 API Key 和 M2M Token 各自受控，不写入页面。</p></div></div>
+            <div class="solution-item"><span class="solution-check">✓</span><div><b>连接 API 与遗留网页</b><p>Gateway 接企业服务，Browser 补齐没有 API 的第三方页面。</p></div></div>
+            <div class="solution-item"><span class="solution-check">✓</span><div><b>执行过程可观测、可回退</b><p>Trace 串联模型与工具，Runtime 端点支持版本灰度和回滚。</p></div></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card architecture-card">
+        <div class="card-head"><div class="card-title"><div><h2>方案架构</h2><p>AgentCore 不是模型本身，而是让模型安全进入企业业务的运行与治理层</p></div></div></div>
+        <div class="architecture-body">
+          <div class="architecture-map">
+            <div class="arch-node"><strong>客户 / 坐席</strong><small>自然语言提出售后诉求</small></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node native arch-runtime"><div class="arch-runtime-emblem">AC</div><strong>AgentCore Runtime</strong><small>承载 Strands Agent<br>同步 · SSE · 异步 · 版本</small></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-services">
+              <div class="arch-node native"><strong>Gateway</strong><small>订单 / 政策 / 工单</small></div>
+              <div class="arch-node native"><strong>Identity</strong><small>API Key / OAuth2</small></div>
+              <div class="arch-node native"><strong>Browser</strong><small>承运商物流网页</small></div>
+              <div class="arch-node native"><strong>Code Interpreter</strong><small>精确计算与图表</small></div>
+              <div class="arch-node native"><strong>Observability</strong><small>Trace / 日志 / 指标</small></div>
+              <div class="arch-node native"><strong>MicroVM</strong><small>隔离的运行环境</small></div>
+            </div>
+          </div>
+          <div class="arch-dependencies">
+            <div class="arch-node custom"><strong>自建 OIDC IdP</strong><small>中国区无 Cognito · KMS 签 JWT</small></div>
+            <div class="arch-node custom"><strong>MemoryLite</strong><small>中国区无 AgentCore Memory · STM / LTM</small></div>
+            <div class="arch-node external"><strong>DeepSeek API</strong><small>唯一外部依赖 · 提供模型推理</small></div>
+          </div>
+          <div class="arch-legend"><span><i class="legend-dot native"></i>AgentCore 原生能力</span><span><i class="legend-dot custom"></i>中国区能力缺失后的自建补位</span><span><i class="legend-dot external"></i>外部模型服务</span></div>
+        </div>
+      </section>
+
+      <section class="card intro-section">
+        <div class="intro-section-head"><span>Demo Journey</span><h3>一条请求如何完成售后闭环</h3></div>
+        <div class="journey">
+          <div class="journey-step"><span>01 · Gateway</span><b>查订单</b><small>金额、状态、承诺时间、运单号</small></div>
+          <div class="journey-step"><span>02 · Browser</span><b>读物流页</b><small>定位西安中转中心分拣故障</small></div>
+          <div class="journey-step"><span>03 · Gateway</span><b>取政策</b><small>费率、周期、最低额和上限</small></div>
+          <div class="journey-step"><span>04 · Sandbox</span><b>算赔付</b><small>按分计算，避免浮点和心算错误</small></div>
+          <div class="journey-step"><span>05 · Gateway</span><b>开工单</b><small>先查重，再执行受控写操作</small></div>
+          <div class="journey-step"><span>06 · Memory</span><b>记偏好</b><small>新会话仍记得短信通知方式</small></div>
+        </div>
+        <div class="intro-boundary"><strong>能力边界：</strong><span>Runtime、Gateway、Identity、Browser、Code Interpreter、Observability 为 AgentCore 中国区原生能力；OIDC IdP 与 MemoryLite 是本项目为中国区能力缺口提供的可替换补位层。</span></div>
+      </section>
+    </div>
+
+    <div class="mode-panel" id="oneStopPanel">
+    <div class="layout">
+      <section class="card chat-card">
+        <div class="card-head">
+          <div class="card-title">
+            <div>
+              <h2>客户对话</h2>
+              <p>模型负责推理，AgentCore 负责安全运行与业务治理</p>
+            </div>
+          </div>
+          <select class="endpoint-select" id="endpointSelect" aria-label="Runtime endpoint">
+            <option value="stable">stable · 稳定端点</option>
+            <option value="DEFAULT">DEFAULT · 最新版本</option>
+          </select>
+        </div>
+
+        <div class="chat-log" id="chatLog" aria-live="polite">
+          <div class="welcome" id="welcome">
+            <div class="welcome-orb">AI</div>
+            <h2>一句话完成售后处理</h2>
+            <p>Agent 将自主查询订单、操作物流网页、读取赔付政策、在沙箱中精确计算金额，并在获得授权后创建工单。</p>
+            <div class="quick-prompts">
+              <button class="quick-prompt" data-prompt="business">演示完整售后链路</button>
+              <button class="quick-prompt" data-prompt="order">只查询订单与物流</button>
+              <button class="quick-prompt" data-prompt="memory">询问我的通知偏好</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="composer-box">
+            <textarea id="promptInput" maxlength="4000" placeholder="请输入客户问题，例如：ORD-1024 为什么还没到？"></textarea>
+            <div class="composer-actions">
+              <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+              <button class="send-button" id="sendButton"><span>发送</span><span>➜</span></button>
+            </div>
+          </div>
+          <div class="composer-foot">
+            <span>业务工具可能执行真实写操作；Prompt 中应明确客户授权。</span>
+            <button class="secondary-button" id="newSessionButton">＋ 新会话</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="card">
+          <div class="card-head">
+            <div class="card-title"><div><h2>实时执行进度</h2><p>仅展示工具状态，不展示模型思维链</p></div></div>
+            <span id="elapsed" style="font-size:12px;color:#667085">0.0s</span>
+          </div>
+          <div class="progress-body" id="progressList">
+            <div class="step" data-step="auth"><div class="step-dot">1</div><div><strong>身份验证与安全运行</strong><small>OIDC JWT · AgentCore Runtime</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="order"><div class="step-dot">2</div><div><strong>查询企业订单</strong><small>Gateway · get_order</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="browser"><div class="step-dot">3</div><div><strong>读取承运商网页</strong><small>Browser · track_shipment</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="policy"><div class="step-dot">4</div><div><strong>读取赔付政策</strong><small>Gateway · get_refund_policy</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="calculate"><div class="step-dot">5</div><div><strong>精确计算赔付</strong><small>Code Interpreter · run_python</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="ticket"><div class="step-dot">6</div><div><strong>创建售后工单</strong><small>Gateway · create_ticket</small></div><span class="step-state">等待</span></div>
+            <div class="step" data-step="memory"><div class="step-dot">7</div><div><strong>记录客户偏好</strong><small>MemoryLite · remember</small></div><span class="step-state">等待</span></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><div class="card-title"><div><h2>技术上下文</h2><p>用于讲解，不包含任何凭证</p></div></div></div>
+          <div class="tech-grid">
+            <div class="tech-cell"><span>Region</span><strong id="regionValue">—</strong></div>
+            <div class="tech-cell"><span>Endpoint</span><strong id="endpointValue">stable</strong></div>
+            <div class="tech-cell"><span>Runtime</span><strong id="runtimeValue" title="">—</strong></div>
+            <div class="tech-cell"><span>Session</span><strong id="sessionValue" title="">尚未开始</strong></div>
+          </div>
+          <div class="capability-list" id="capabilityList"></div>
+          <div class="selftest-action">
+            <button class="selftest-button" id="selftestButton">运行 8 项全能力自检</button>
+            <p class="selftest-note">自检会写入一条 MemoryLite 标记，并把报告保存到 S3。建议客户到场前执行。</p>
+          </div>
+          <div class="selftest-results" id="selftestResults"></div>
+        </section>
+      </aside>
+    </div>
+    </div>
+
+    <div class="mode-panel" id="guidedPanel">
+      <div class="guided-layout">
+        <section class="card">
+          <div class="card-head"><div class="card-title"><div><h2>引导式业务演示</h2><p>按顺序观察每一种 AgentCore 能力如何参与业务</p></div></div></div>
+          <div class="guided-intro">每一步都复用同一个用户和会话，让客户看清“查订单 → 读网页 → 取政策 → 沙箱计算 → 建工单 → 记偏好”的因果关系。工单和记忆步骤执行前会再次确认。</div>
+          <div class="guided-list" id="guidedList">
+            <div class="guided-card" data-guided="0"><div class="guided-number">1</div><div class="guided-copy"><strong>查询订单基础信息</strong><small>Gateway · 获取金额、状态、承诺时间和运单号</small></div><button class="guided-run">运行此步</button></div>
+            <div class="guided-card" data-guided="1"><div class="guided-number">2</div><div class="guided-copy"><strong>访问物流查询网页</strong><small>Browser · 填写表单并读取中转异常原因</small></div><button class="guided-run">运行此步</button></div>
+            <div class="guided-card" data-guided="2"><div class="guided-number">3</div><div class="guided-copy"><strong>读取企业赔付政策</strong><small>Gateway · 获取费率、周期、上限和最低赔付</small></div><button class="guided-run">运行此步</button></div>
+            <div class="guided-card" data-guided="3"><div class="guided-number">4</div><div class="guided-copy"><strong>在沙箱中精确计算</strong><small>Code Interpreter · 严格按分计算应赔金额</small></div><button class="guided-run">运行此步</button></div>
+            <div class="guided-card" data-guided="4"><div class="guided-number">5</div><div class="guided-copy"><strong>检查并创建售后工单</strong><small>Gateway · 先查重，再执行受控写操作</small></div><button class="guided-run">运行此步</button></div>
+            <div class="guided-card" data-guided="5"><div class="guided-number">6</div><div class="guided-copy"><strong>记录客户通知偏好</strong><small>MemoryLite · 保存“短信通知”长期偏好</small></div><button class="guided-run">运行此步</button></div>
+          </div>
+        </section>
+
+        <section class="card guided-output">
+          <div class="card-head">
+            <div class="card-title"><div><h2>分步执行结果</h2><p>工具状态与回答会按步骤保留，便于逐项讲解</p></div></div>
+            <div class="guided-toolbar"><span class="guided-session" id="guidedSession">尚未创建会话</span><button class="secondary-button" id="resetGuidedButton">重新开始</button></div>
+          </div>
+          <div class="guided-log" id="guidedLog"><div class="guided-empty" id="guidedEmpty"><div><strong>从左侧第 1 步开始</strong><br>每次只给 Agent 一个清晰目标，观察受控工具如何完成任务。</div></div></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="mode-panel" id="resourcesPanel">
+      <section class="card resources-card">
+        <div class="card-head">
+          <div class="card-title"><div><h2>业务资源查看</h2><p>查看 Demo 合成数据，理解 Agent 实际操作的业务对象</p></div></div>
+          <span class="read-only-badge">只读 · 不访问认证与记忆表</span>
+        </div>
+        <div class="resource-toolbar">
+          <div class="resource-types">
+            <button class="resource-button active" data-resource="orders">所有订单</button>
+            <button class="resource-button" data-resource="shipments">所有运单</button>
+            <button class="resource-button" data-resource="tickets">所有工单</button>
+          </div>
+          <div class="resource-meta" id="resourceMeta">选择资源后自动加载</div>
+        </div>
+        <div class="resource-table-wrap" id="resourceTableWrap"><div class="resource-empty">正在准备业务资源视图…</div></div>
+      </section>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+    "use strict";
+
+    const $ = (selector) => document.querySelector(selector);
+    const state = {
+      config: null,
+      sessionId: null,
+      guidedSessionId: null,
+      guidedCompleted: new Set(),
+      activeMode: "intro",
+      loadedResource: null,
+      running: false,
+      currentStep: null,
+      timer: null,
+      startedAt: 0,
+    };
+
+    const guidedSteps = [
+      {
+        title: "查询订单基础信息",
+        prompt: "这是分步骤演示的第 1 步。请只调用订单工具查询 ORD-1024，返回订单状态、金额、承诺送达时间和运单号。不要查询物流网页，不要计算赔付，不要创建工单。",
+      },
+      {
+        title: "访问物流查询网页",
+        prompt: "这是分步骤演示的第 2 步。基于刚才订单的运单号，只使用 Browser 查询承运商物流网页，说明当前地点和异常原因。不要计算赔付或创建工单。",
+      },
+      {
+        title: "读取企业赔付政策",
+        prompt: "这是分步骤演示的第 3 步。只查询 logistics_delay 赔付政策，列出费率、周期、上限和最低赔付额。暂时不要计算，不要创建工单。",
+      },
+      {
+        title: "在沙箱中精确计算",
+        prompt: "这是分步骤演示的第 4 步。结合前面查到的订单金额、超期时长和赔付政策，必须使用 run_python 按分计算应赔金额，并展示计算公式。不要创建工单。",
+      },
+      {
+        title: "检查并创建售后工单",
+        writes: true,
+        prompt: "这是分步骤演示的第 5 步。先检查 ORD-1024 是否已有同类未关闭工单；如果没有，为本次物流延迟创建 normal 工单；如果已有则不要重复创建，并说明工单号。",
+      },
+      {
+        title: "记录客户通知偏好",
+        writes: true,
+        prompt: "这是分步骤演示的第 6 步。请记住我的售后进展通知偏好是短信，并确认已经记录。",
+      },
+    ];
+
+    const resourceColumns = {
+      orders: [
+        ["order_id", "订单号", "id"], ["customer_id", "客户"], ["item_name", "商品"],
+        ["status", "状态", "status"], ["amount_cents", "金额", "money"],
+        ["created_at", "下单时间", "time"], ["promised_at", "承诺送达", "time"],
+        ["shipment_no", "运单号"], ["carrier", "承运商"],
+      ],
+      shipments: [
+        ["shipment_no", "运单号", "id"], ["order_id", "订单号"], ["carrier", "承运商"],
+        ["status", "状态", "status"], ["current_location", "当前位置"],
+        ["stalled_hours", "滞留小时"], ["events", "最新轨迹", "events"],
+      ],
+      tickets: [
+        ["ticket_id", "工单号", "id"], ["order_id", "订单号"], ["category", "类型"],
+        ["severity", "级别", "status"], ["status", "状态", "status"],
+        ["summary", "问题摘要"], ["created_at", "创建时间", "time"],
+      ],
+    };
+
+    const prompts = {
+      business: "订单 ORD-1024 为什么还没到？请查询真实物流状态并按赔付政策计算金额。如果确认超时，直接为我创建物流延迟工单。以后此类进展请用短信通知我。",
+      order: "请帮我查询订单 ORD-1024 当前的订单状态和真实物流状态，但暂时不要创建工单。",
+      memory: "我之前希望用什么方式接收售后进展？",
+    };
+
+    const toolSteps = {
+      "business___get_order": "order",
+      "business___list_orders_by_customer": "order",
+      "track_shipment": "browser",
+      "browse_page": "browser",
+      "business___get_refund_policy": "policy",
+      "run_python": "calculate",
+      "business___list_tickets": "ticket",
+      "business___create_ticket": "ticket",
+      "recall": "memory",
+      "remember": "memory",
+      "forget": "memory",
+    };
+
+    function toast(message, isError = false) {
+      const el = $("#toast");
+      el.textContent = message;
+      el.className = "toast show" + (isError ? " error" : "");
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.className = "toast"; }, 3800);
+    }
+
+    function setConnection(ok, text) {
+      $("#statusDot").className = "status-dot " + (ok ? "ok" : "bad");
+      $("#statusText").textContent = text;
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch("/api/config", {cache: "no-store"});
+        if (!response.ok) throw new Error("配置接口不可用");
+        state.config = await response.json();
+        $("#regionValue").textContent = state.config.region;
+        $("#runtimeValue").textContent = state.config.runtimeId;
+        $("#runtimeValue").title = state.config.runtimeId;
+        $("#endpointSelect").value = state.config.qualifier;
+        $("#endpointValue").textContent = state.config.qualifier;
+        $("#promptInput").value = state.config.defaultPrompt;
+        renderCapabilities(state.config.capabilities || []);
+        setConnection(true, `${state.config.region} · 本地安全代理已就绪`);
+      } catch (error) {
+        setConnection(false, "无法连接本地演示服务");
+        toast(error.message || "加载配置失败", true);
+      }
+    }
+
+    function renderCapabilities(items) {
+      const root = $("#capabilityList");
+      root.textContent = "";
+      items.forEach((item) => {
+        const tag = document.createElement("span");
+        tag.className = "capability " + (item.kind === "AgentCore" ? "native" : "custom");
+        tag.textContent = `${item.name} · ${item.kind}`;
+        tag.title = item.note || "";
+        root.appendChild(tag);
+      });
+    }
+
+    function resetProgress() {
+      document.querySelectorAll(".step").forEach((step) => {
+        step.className = "step";
+        step.querySelector(".step-state").textContent = "等待";
+      });
+      state.currentStep = null;
+      $("#elapsed").textContent = "0.0s";
+    }
+
+    function setStep(name, status) {
+      const step = document.querySelector(`[data-step="${name}"]`);
+      if (!step) return;
+      if (status === "running" && state.currentStep && state.currentStep !== name) {
+        setStep(state.currentStep, "done");
+      }
+      step.className = "step " + status;
+      step.querySelector(".step-state").textContent = {
+        running: "执行中",
+        done: "完成",
+        failed: "失败",
+      }[status] || "等待";
+      if (status === "running") state.currentStep = name;
+      if ((status === "done" || status === "failed") && state.currentStep === name) state.currentStep = null;
+    }
+
+    function beginTimer() {
+      state.startedAt = performance.now();
+      clearInterval(state.timer);
+      state.timer = setInterval(() => {
+        $("#elapsed").textContent = `${((performance.now() - state.startedAt) / 1000).toFixed(1)}s`;
+      }, 100);
+    }
+
+    function endTimer() {
+      clearInterval(state.timer);
+      state.timer = null;
+      if (state.startedAt) $("#elapsed").textContent = `${((performance.now() - state.startedAt) / 1000).toFixed(1)}s`;
+    }
+
+    function removeWelcome() {
+      const welcome = $("#welcome");
+      if (welcome) welcome.remove();
+    }
+
+    function addMessage(role, text = "") {
+      removeWelcome();
+      const row = document.createElement("div");
+      row.className = `message ${role}`;
+      const avatar = document.createElement("div");
+      avatar.className = "avatar";
+      avatar.textContent = role === "user" ? "客户" : "AI";
+      const body = document.createElement("div");
+      const chips = document.createElement("div");
+      chips.className = "tool-chips";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = text;
+      const meta = document.createElement("div");
+      meta.className = "message-meta";
+      meta.textContent = new Date().toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"});
+      body.append(chips, bubble, meta);
+      row.append(avatar, body);
+      $("#chatLog").appendChild(row);
+      $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+      return {row, bubble, chips, meta};
+    }
+
+    function addToolChip(root, name) {
+      const chip = document.createElement("span");
+      chip.className = "tool-chip";
+      chip.textContent = `调用工具 · ${name}`;
+      root.appendChild(chip);
+    }
+
+    async function responseError(response) {
+      try {
+        const body = await response.json();
+        return body.error || `请求失败（HTTP ${response.status}）`;
+      } catch (_) {
+        return `请求失败（HTTP ${response.status}）`;
+      }
+    }
+
+    async function consumeSSE(response, onEvent) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let dataLines = [];
+
+      function consumeLine(line) {
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") {
+          if (dataLines.length) {
+            const raw = dataLines.join("\n");
+            dataLines = [];
+            try { onEvent(JSON.parse(raw)); }
+            catch (_) { onEvent({type: "text", delta: raw}); }
+          }
+          return;
+        }
+        if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      }
+
+      while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+        let newline;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          consumeLine(line);
+        }
+        if (done) break;
+      }
+      if (buffer) consumeLine(buffer);
+      consumeLine("");
+    }
+
+    function setRunning(running) {
+      state.running = running;
+      $("#sendButton").disabled = running;
+      $("#newSessionButton").disabled = running;
+      $("#selftestButton").disabled = running;
+      $("#endpointSelect").disabled = running;
+      $("#promptInput").disabled = running;
+      document.querySelectorAll(".guided-run, .resource-button, .mode-tab").forEach((button) => {
+        button.disabled = running;
+      });
+      $("#sendButton span:first-child").textContent = running ? "处理中" : "发送";
+    }
+
+    async function sendMessage() {
+      if (state.running) return;
+      const prompt = $("#promptInput").value.trim();
+      if (!prompt) return toast("请先输入客户问题", true);
+
+      addMessage("user", prompt);
+      const agent = addMessage("agent", "");
+      agent.bubble.classList.add("typing");
+      resetProgress();
+      setStep("auth", "running");
+      setRunning(true);
+      beginTimer();
+      let answer = "";
+      let streamError = false;
+
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Demo-Request": "1"},
+          body: JSON.stringify({
+            prompt,
+            sessionId: state.sessionId,
+            qualifier: $("#endpointSelect").value,
+          }),
+        });
+        if (!response.ok) throw new Error(await responseError(response));
+
+        await consumeSSE(response, (event) => {
+          if (event.type === "meta") {
+            state.sessionId = event.sessionId;
+            $("#sessionValue").textContent = event.sessionId;
+            $("#sessionValue").title = event.sessionId;
+            $("#endpointValue").textContent = event.qualifier;
+            setStep("auth", "done");
+          } else if (event.type === "tool") {
+            const name = event.name || "unknown";
+            addToolChip(agent.chips, name);
+            const step = toolSteps[name];
+            if (step) setStep(step, "running");
+          } else if (event.type === "text") {
+            answer += event.delta || "";
+            agent.bubble.textContent = answer;
+            $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+          } else if (event.type === "error") {
+            streamError = true;
+            if (state.currentStep) setStep(state.currentStep, "failed");
+            answer += `\n\n[执行失败] ${event.message || "未知错误"}`;
+            agent.bubble.textContent = answer;
+          } else if (event.type === "done") {
+            if (state.currentStep) setStep(state.currentStep, "done");
+          }
+        });
+
+        if (!answer && !streamError) {
+          answer = "调用已经结束，但没有收到文本结果。请查看 Runtime 日志。";
+          agent.bubble.textContent = answer;
+        }
+        if (!streamError) toast("业务链路执行完成");
+      } catch (error) {
+        streamError = true;
+        if (state.currentStep) setStep(state.currentStep, "failed");
+        agent.bubble.textContent = `调用失败：${error.message || "请查看启动终端"}`;
+        toast(error.message || "调用失败", true);
+      } finally {
+        agent.bubble.classList.remove("typing");
+        agent.meta.textContent += ` · ${((performance.now() - state.startedAt) / 1000).toFixed(1)} 秒`;
+        endTimer();
+        setRunning(false);
+      }
+    }
+
+    function newSession() {
+      if (state.running) return;
+      state.sessionId = null;
+      $("#sessionValue").textContent = "将在下次提问时创建";
+      $("#sessionValue").title = "";
+      resetProgress();
+      toast("已切换为全新会话；用户身份保持不变");
+    }
+
+    async function runSelftest() {
+      if (state.running) return;
+      const confirmed = window.confirm("完整自检会写入一条 MemoryLite 标记，并将报告保存到 S3。是否继续？");
+      if (!confirmed) return;
+      setRunning(true);
+      const button = $("#selftestButton");
+      button.textContent = "正在依次检查 8 项能力…";
+      const root = $("#selftestResults");
+      root.className = "selftest-results visible";
+      root.textContent = "";
+      try {
+        const response = await fetch("/api/selftest", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Demo-Request": "1"},
+          body: JSON.stringify({qualifier: $("#endpointSelect").value}),
+        });
+        if (!response.ok) throw new Error(await responseError(response));
+        const result = await response.json();
+        const steps = result.steps || [];
+        steps.forEach((step) => {
+          const row = document.createElement("div");
+          row.className = `test-row ${step.status || "skipped"}`;
+          const mark = document.createElement("div");
+          mark.className = "test-mark";
+          mark.textContent = step.status === "ok" ? "✓" : (step.status === "failed" ? "×" : "–");
+          const body = document.createElement("div");
+          const name = document.createElement("strong");
+          name.textContent = step.component || step.name || "未知组件";
+          const detail = document.createElement("div");
+          detail.className = "test-detail";
+          detail.textContent = step.detail || step.error || "";
+          body.append(name, detail);
+          const time = document.createElement("div");
+          time.className = "test-time";
+          time.textContent = `${step.duration_ms || 0} ms`;
+          row.append(mark, body, time);
+          root.appendChild(row);
+        });
+        const summary = result.summary || {};
+        button.textContent = `${summary.ok || 0}/${summary.total || steps.length} 项通过 · 再次运行`;
+        toast(`全能力自检完成：${summary.ok || 0}/${summary.total || steps.length} 通过`);
+      } catch (error) {
+        button.textContent = "运行 8 项全能力自检";
+        root.textContent = "";
+        root.className = "selftest-results";
+        toast(error.message || "自检失败", true);
+      } finally {
+        setRunning(false);
+      }
+    }
+
+    function switchMode(mode) {
+      if (state.running || !["intro", "oneStop", "guided", "resources"].includes(mode)) return;
+      state.activeMode = mode;
+      document.querySelectorAll(".mode-tab").forEach((button) => {
+        button.classList.toggle("active", button.dataset.mode === mode);
+      });
+      document.querySelectorAll(".mode-panel").forEach((panel) => panel.classList.remove("active"));
+      const panel = document.querySelector(`#${mode}Panel`);
+      if (panel) panel.classList.add("active");
+      if (mode === "resources" && !state.loadedResource) loadResources("orders");
+    }
+
+    function resetGuided() {
+      if (state.running) return;
+      state.guidedSessionId = null;
+      state.guidedCompleted.clear();
+      $("#guidedSession").textContent = "尚未创建会话";
+      document.querySelectorAll(".guided-card").forEach((card) => {
+        card.className = "guided-card";
+        card.querySelector(".guided-run").textContent = "运行此步";
+      });
+      const log = $("#guidedLog");
+      log.textContent = "";
+      const empty = document.createElement("div");
+      empty.className = "guided-empty";
+      empty.id = "guidedEmpty";
+      const copy = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = "从左侧第 1 步开始";
+      copy.append(title, document.createElement("br"), document.createTextNode("每次只给 Agent 一个清晰目标，观察受控工具如何完成任务。"));
+      empty.appendChild(copy);
+      log.appendChild(empty);
+      toast("分步骤演示已重置，将创建全新会话");
+    }
+
+    async function runGuidedStep(index) {
+      if (state.running) return;
+      const definition = guidedSteps[index];
+      const card = document.querySelector(`[data-guided="${index}"]`);
+      if (!definition || !card) return;
+      if (index > 0 && !state.guidedSessionId) {
+        toast("建议先运行第 1 步，以建立完整业务上下文", true);
+        return;
+      }
+      if (definition.writes && !window.confirm(`“${definition.title}”可能写入演示数据。是否继续？`)) return;
+
+      const empty = $("#guidedEmpty");
+      if (empty) empty.remove();
+      const result = document.createElement("article");
+      result.className = "guided-result";
+      const head = document.createElement("div");
+      head.className = "guided-result-head";
+      const title = document.createElement("strong");
+      title.textContent = `第 ${index + 1} 步 · ${definition.title}`;
+      const duration = document.createElement("span");
+      duration.textContent = "执行中…";
+      head.append(title, duration);
+      const chips = document.createElement("div");
+      chips.className = "tool-chips";
+      const text = document.createElement("div");
+      text.className = "guided-result-text typing";
+      result.append(head, chips, text);
+      $("#guidedLog").appendChild(result);
+      $("#guidedLog").scrollTop = $("#guidedLog").scrollHeight;
+
+      const started = performance.now();
+      card.className = "guided-card running";
+      card.querySelector(".guided-run").textContent = "执行中";
+      setRunning(true);
+      let answer = "";
+      let failed = false;
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Demo-Request": "1"},
+          body: JSON.stringify({
+            prompt: definition.prompt,
+            sessionId: state.guidedSessionId,
+            qualifier: $("#endpointSelect").value,
+          }),
+        });
+        if (!response.ok) throw new Error(await responseError(response));
+        await consumeSSE(response, (event) => {
+          if (event.type === "meta") {
+            state.guidedSessionId = event.sessionId;
+            $("#guidedSession").textContent = `会话 ${event.sessionId}`;
+            $("#guidedSession").title = event.sessionId;
+          } else if (event.type === "tool") {
+            addToolChip(chips, event.name || "unknown");
+          } else if (event.type === "text") {
+            answer += event.delta || "";
+            text.textContent = answer;
+            $("#guidedLog").scrollTop = $("#guidedLog").scrollHeight;
+          } else if (event.type === "error") {
+            failed = true;
+            answer += `\n[执行失败] ${event.message || "未知错误"}`;
+            text.textContent = answer;
+          }
+        });
+        if (!answer) text.textContent = "步骤已结束，但没有收到文本结果。";
+        card.className = `guided-card ${failed ? "failed" : "done"}`;
+        card.querySelector(".guided-run").textContent = failed ? "重试" : "再次运行";
+        if (!failed) state.guidedCompleted.add(index);
+      } catch (error) {
+        failed = true;
+        text.textContent = `调用失败：${error.message || "请查看启动终端"}`;
+        card.className = "guided-card failed";
+        card.querySelector(".guided-run").textContent = "重试";
+        toast(error.message || "步骤执行失败", true);
+      } finally {
+        text.classList.remove("typing");
+        duration.textContent = `${((performance.now() - started) / 1000).toFixed(1)} 秒`;
+        setRunning(false);
+      }
+    }
+
+    function formatTime(value) {
+      if (!value) return "—";
+      const date = new Date(Number(value) * 1000);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", {hour12: false});
+    }
+
+    function statusTone(value) {
+      const status = String(value || "").toLowerCase();
+      if (["delivered", "resolved", "closed", "low"].includes(status)) return "good";
+      if (["exception", "high", "failed"].includes(status)) return "bad";
+      if (["shipped", "delayed", "pending", "open", "normal"].includes(status)) return "warn";
+      return "";
+    }
+
+    function displayValue(item, key, format) {
+      const value = item[key];
+      if (format === "money") return value == null ? "—" : `¥${(Number(value) / 100).toFixed(2)}`;
+      if (format === "time") return formatTime(value);
+      if (format === "events") {
+        if (!Array.isArray(value) || !value.length) return "—";
+        const latest = [...value].sort((a, b) => Number(b.at || 0) - Number(a.at || 0))[0];
+        return `${latest.location || ""} · ${latest.note || ""}`;
+      }
+      return value == null || value === "" ? "—" : String(value);
+    }
+
+    function renderResources(payload) {
+      const wrap = $("#resourceTableWrap");
+      wrap.textContent = "";
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const columns = resourceColumns[payload.resource] || [];
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "resource-empty";
+        empty.textContent = `没有找到${payload.label || "业务"}数据`;
+        wrap.appendChild(empty);
+        return;
+      }
+      const table = document.createElement("table");
+      table.className = "resource-table";
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      columns.forEach(([, label]) => {
+        const th = document.createElement("th");
+        th.textContent = label;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      const tbody = document.createElement("tbody");
+      items.forEach((item) => {
+        const row = document.createElement("tr");
+        columns.forEach(([key, , format]) => {
+          const cell = document.createElement("td");
+          const value = displayValue(item, key, format);
+          if (format === "id") {
+            const strong = document.createElement("span");
+            strong.className = "resource-id";
+            strong.textContent = value;
+            cell.appendChild(strong);
+          } else if (format === "status") {
+            const badge = document.createElement("span");
+            badge.className = `resource-status ${statusTone(value)}`;
+            badge.textContent = value;
+            cell.appendChild(badge);
+          } else {
+            cell.textContent = value;
+            if (format === "events" || key === "summary") cell.className = "resource-note";
+          }
+          row.appendChild(cell);
+        });
+        tbody.appendChild(row);
+      });
+      table.append(thead, tbody);
+      wrap.appendChild(table);
+      const refreshed = new Date(Number(payload.refreshedAt || 0) * 1000).toLocaleTimeString("zh-CN", {hour12: false});
+      $("#resourceMeta").textContent = `${payload.label} ${payload.count} 条 · ${payload.source} · ${refreshed}`;
+    }
+
+    async function loadResources(type) {
+      if (state.running || !resourceColumns[type]) return;
+      state.loadedResource = type;
+      document.querySelectorAll(".resource-button").forEach((button) => {
+        button.classList.toggle("active", button.dataset.resource === type);
+      });
+      const wrap = $("#resourceTableWrap");
+      wrap.textContent = "";
+      const loading = document.createElement("div");
+      loading.className = "resource-empty";
+      loading.textContent = "正在从业务表读取数据…";
+      wrap.appendChild(loading);
+      $("#resourceMeta").textContent = "加载中…";
+      setRunning(true);
+      try {
+        const response = await fetch("/api/resources", {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Demo-Request": "1"},
+          body: JSON.stringify({resource: type}),
+        });
+        if (!response.ok) throw new Error(await responseError(response));
+        renderResources(await response.json());
+      } catch (error) {
+        wrap.textContent = "";
+        const failed = document.createElement("div");
+        failed.className = "resource-empty";
+        failed.textContent = `加载失败：${error.message || "请查看启动终端"}`;
+        wrap.appendChild(failed);
+        $("#resourceMeta").textContent = "加载失败";
+        toast(error.message || "资源加载失败", true);
+      } finally {
+        setRunning(false);
+      }
+    }
+
+    document.querySelectorAll(".quick-prompt").forEach((button) => {
+      button.addEventListener("click", () => {
+        $("#promptInput").value = prompts[button.dataset.prompt] || "";
+        $("#promptInput").focus();
+      });
+    });
+    document.querySelectorAll(".mode-tab").forEach((button) => {
+      button.addEventListener("click", () => switchMode(button.dataset.mode));
+    });
+    document.querySelectorAll("[data-go-mode]").forEach((button) => {
+      button.addEventListener("click", () => switchMode(button.dataset.goMode));
+    });
+    document.querySelectorAll(".guided-run").forEach((button) => {
+      button.addEventListener("click", () => runGuidedStep(Number(button.closest(".guided-card").dataset.guided)));
+    });
+    document.querySelectorAll(".resource-button").forEach((button) => {
+      button.addEventListener("click", () => loadResources(button.dataset.resource));
+    });
+    $("#resetGuidedButton").addEventListener("click", resetGuided);
+    $("#sendButton").addEventListener("click", sendMessage);
+    $("#newSessionButton").addEventListener("click", newSession);
+    $("#selftestButton").addEventListener("click", runSelftest);
+    $("#endpointSelect").addEventListener("change", (event) => {
+      $("#endpointValue").textContent = event.target.value;
+    });
+    $("#promptInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    loadConfig();
+  </script>
+</body>
+</html>
