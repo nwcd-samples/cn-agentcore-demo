@@ -100,11 +100,60 @@ class TestCreateGatewayParams:
         # aud 必须和 IdP 签出来的一致,否则 Gateway 静默全拒
         assert jwt["allowedAudience"] == ["agentcore-cn"]
         assert jwt["allowedClients"] == ["c1", "c2"]
+        claim = jwt["customClaims"][0]
+        assert claim["inboundTokenClaimName"] == "token_use"
+        assert claim["authorizingClaimMatchValue"]["claimMatchValue"] == {
+            "matchValueString": "access"
+        }
 
     def test_authorizer_config_omits_empty_client_list(self, create_gateway):
         """allowedClients 传空列表会被服务端当成"谁都不允许",必须整个字段不传。"""
         cfg = create_gateway.build_authorizer_config(DISCOVERY_URL, "agentcore-cn", [])
         assert "allowedClients" not in cfg["customJWTAuthorizer"]
+
+    def test_authorizer_advertises_quick_scopes(self, service_model, create_gateway):
+        scopes = ["gateway:invoke", "tools:read", "tools:write"]
+        cfg = create_gateway.build_authorizer_config(
+            DISCOVERY_URL,
+            "agentcore-cn",
+            ["agentcore-cn-quick"],
+            allowed_scopes=scopes,
+        )
+        assert cfg["customJWTAuthorizer"]["allowedScopes"] == scopes
+        params = self._params(create_gateway, authorizerConfiguration=cfg)
+        assert_valid(service_model, "CreateGateway", params)
+
+    def test_dcr_mode_omits_fixed_client_allowlist(self, monkeypatch, create_gateway):
+        monkeypatch.setenv("ENABLE_OAUTH_DCR", "1")
+        clients, enabled = create_gateway.resolve_allowed_clients("agentcore-cn")
+        assert enabled is True
+        assert clients == []
+        cfg = create_gateway.build_authorizer_config(
+            DISCOVERY_URL,
+            ["agentcore-cn", "https://gateway.example/mcp"],
+            clients,
+            allowed_scopes=["gateway:invoke", "tools:read", "tools:write"],
+        )
+        assert "allowedClients" not in cfg["customJWTAuthorizer"]
+        assert cfg["customJWTAuthorizer"]["allowedAudience"] == [
+            "agentcore-cn",
+            "https://gateway.example/mcp",
+        ]
+        assert cfg["customJWTAuthorizer"]["allowedScopes"] == [
+            "gateway:invoke",
+            "tools:read",
+            "tools:write",
+        ]
+
+    def test_fixed_mode_keeps_three_clients(self, monkeypatch, create_gateway):
+        monkeypatch.delenv("ENABLE_OAUTH_DCR", raising=False)
+        clients, enabled = create_gateway.resolve_allowed_clients("agentcore-cn")
+        assert enabled is False
+        assert clients == [
+            "agentcore-cn-client",
+            "agentcore-cn-client-m2m",
+            "agentcore-cn-quick",
+        ]
 
     def test_discovery_url_uses_china_domain(self):
         assert DISCOVERY_URL.endswith("/.well-known/openid-configuration")

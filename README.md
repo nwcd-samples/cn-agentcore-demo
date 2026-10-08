@@ -205,7 +205,7 @@ tests/       本地单元测试(不需要 AWS 凭证)
 ## 测试
 
 ```
-pytest tests/                                  # 556 个用例,不需要 AWS 凭证
+pytest tests/                                  # 589 个用例,不需要 AWS 凭证
 cfn-lint infra/*.yaml --region cn-northwest-1   # 模板离线校验
 ```
 
@@ -277,6 +277,24 @@ Amazon Quick 的团队 Connector 可以用 Service-to-Service(`client_credential
 这是团队共享的服务身份,不是逐用户 OAuth。当前业务 Lambda 也没有按最终用户隔离
 订单,适合合成数据 Demo 和团队工具;生产逐用户场景仍需 Authorization Code + PKCE、
 JWT passthrough 和 Lambda 侧 `actor_id` 授权。
+
+若 Quick 团队 Connector 在工具执行阶段仍要求 DCR,可启用 Demo 级 OAuth 2.1
+Authorization Code + PKCE 兼容层:
+
+```bash
+# .env 中设置 ENABLE_OAUTH_DCR=1,并确保 GATEWAY_URL 已配置
+./scripts/deploy.sh --quick-oauth
+.venv/bin/python scripts/verify_quick_oauth.py
+```
+
+该模式提供 RFC 7591 DCR、授权码、PKCE S256、一次性 code、refresh rotation 和
+resource 绑定。DCR 只允许公共/机密 authorization_code 客户端,明确拒绝动态
+client_credentials；redirect URI 仅允许 `*.quicksight.aws.amazon.com` 或本机
+loopback。Gateway 会移除固定 `allowedClients`,改由可信 issuer + audience + scope
+控制动态 client。登录使用现有 Demo 用户。
+
+这是 **Remote MCP 兼容 Demo**,不是生产 IdP:没有 MFA、登录锁定、企业用户目录、
+细粒度同意页和完整安全审计；业务 Lambda 也尚未按 `actor_id` 隔离订单。
 
 若 Desktop 的直接 Remote Connector 因客户端版本问题持续 401,可用已经固定
 `mcp-remote@0.14.3` 的本地兼容代理；它优先使用 Quick 专用凭证:
@@ -375,9 +393,10 @@ python scripts/invoke.py --selftest
   把 `Authorization` 透进 Lambda,再解 `actor_id` 过滤。
 - **所有 CloudFormation 资源都是 `DeletionPolicy: Delete`**(S3 桶带
   `EmptyOnDelete`),删栈会连数据一起删。生产请改 `Retain`。
-- **IdP 是最小可用实现。** 没有 MFA、没有密码复杂度策略、没有登录失败锁定,
-  `/oauth2/authorize` 是个返回 400 的桩(只支持 `password` /
-  `client_credentials` / `refresh_token` 三种 grant)。
+- **IdP 是 Demo 级 OAuth 2.1 实现。** 支持 DCR、Authorization Code、PKCE S256、
+  `password` / `client_credentials` / `refresh_token`,但没有 MFA、密码复杂度、登录
+  锁定、企业用户目录、细粒度 consent 和生产级审计。DCR 的 redirect host 白名单
+  也是为 Amazon Quick 演示收敛的,不是通用企业 IdP。
 
 数据方面:仓库里没有任何真实凭证。`seed_business.py` 生成的订单、运单、
 工单全部是合成数据,`.env.example` 里的密码/密钥字段一律留空。

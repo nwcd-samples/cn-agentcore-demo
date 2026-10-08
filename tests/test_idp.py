@@ -843,11 +843,12 @@ class TestRoutingAndParsing:
         response = handler.lambda_handler(make_event("GET", "/nope"), None)
         assert response["statusCode"] == 404
 
-    def test_authorize_endpoint_declines_cleanly(self, idp):
+    def test_authorize_endpoint_rejects_incomplete_request_as_html(self, idp):
         handler, _, _ = idp
         response = handler.lambda_handler(make_event("GET", "/oauth2/authorize"), None)
         assert response["statusCode"] == 400
-        assert body_of(response)["error"] == "unsupported_response_type"
+        assert response["headers"]["Content-Type"].startswith("text/html")
+        assert "invalid client" in response["body"]
 
     def test_base64_encoded_body_is_decoded(self, idp):
         handler, _, _ = idp

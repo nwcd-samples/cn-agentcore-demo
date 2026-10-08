@@ -139,7 +139,10 @@ class TestDeploymentWiring:
         import create_gateway
 
         source = (REPO_ROOT / "scripts" / "create_gateway.py").read_text()
-        assert "naming.gateway_client_ids(args.project)" in source
+        assert "resolve_allowed_clients(args.project)" in source
+        assert "naming.gateway_client_ids(project)" in source
+        assert "allowed_scopes=allowed_scopes" in source
+        assert "allowed_scopes = naming.QUICK_CLIENT_SCOPES" in source
         assert naming.gateway_client_ids("agentcore-cn") == [
             "agentcore-cn-client",
             "agentcore-cn-client-m2m",

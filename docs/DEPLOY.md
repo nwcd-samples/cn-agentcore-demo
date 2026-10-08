@@ -25,7 +25,7 @@ cp .env.example .env    # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 先在本地跑一遍测试,确认环境没问题(不需要 AWS 凭证):
 
 ```bash
-.venv/bin/python -m pytest tests/ -q          # 556 个用例
+.venv/bin/python -m pytest tests/ -q          # 589 个用例
 .venv/bin/cfn-lint infra/*.yaml --region cn-northwest-1
 ```
 
@@ -55,6 +55,7 @@ cp .env.example .env    # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 ./scripts/deploy.sh --code       # 只重推三个 Lambda 的代码
 ./scripts/deploy.sh --seed       # 只重灌演示数据
 ./scripts/deploy.sh --quick      # 只建/轮换 Quick S2S 客户端并更新 Gateway
+./scripts/deploy.sh --quick-oauth # 部署 Demo OAuth2.1 DCR+PKCE Remote 兼容层
 ./scripts/deploy.sh --verify     # 只跑连通性检查
 ./scripts/deploy.sh --identity   # 只配 Identity 出向凭证
 ./scripts/deploy.sh --gateway    # 只建/更新 Gateway
@@ -129,6 +130,51 @@ QUICK_CLIENT_SECRET=<刚生成的密钥>
 Quick 2LO 是团队共享服务身份。它解决远程连接和自动续期,但不代表最终用户身份。
 生产逐用户授权需要另行实现 Authorization Code + PKCE,并将 JWT passthrough 到
 Tools Lambda 按 `actor_id` 做数据隔离和写权限校验。
+
+### Quick 执行阶段仍要求 DCR 时（Demo OAuth 2.1）
+
+部分 Quick 版本即使创建 Connector 时填了 Service-to-Service 凭证,首次工具调用仍会
+进入自动 OAuth 并要求 `registration_endpoint`。启用兼容层:
+
+```bash
+# GATEWAY_URL 必须已在 .env
+ENABLE_OAUTH_DCR=1
+./scripts/deploy.sh --quick-oauth
+```
+
+命令按以下顺序执行:
+
+1. 更新 IdP CloudFormation,增加 POST `/oauth2/register` 和 POST `/oauth2/authorize`；
+2. 推送 IdP Lambda 代码并回填真实 issuer / MCP resource；
+3. 更新 Gateway,移除固定 `allowedClients`,保留 issuer、audience、allowedScopes；
+4. Gateway / Target 恢复 READY 后运行完整协议验证:
+
+```bash
+.venv/bin/python scripts/verify_quick_oauth.py
+```
+
+验证器自动执行 metadata → DCR → 登录页 → Authorization Code + PKCE → Token →
+MCP tools/list,但不会打印密码、code、client secret 或 access token。通过后再新建
+Quick Connector。
+
+实现的 Demo 安全边界:
+
+- DCR 只允许 `authorization_code` + 可选 `refresh_token`,拒绝动态
+  `client_credentials`；
+- 支持公共客户端(`token_endpoint_auth_method=none`)和有 secret 的机密客户端；
+- 强制 PKCE S256,code 5 分钟过期且 DynamoDB 条件写/原子删除保证单次使用；
+- code 绑定 client ID、redirect URI、resource、用户与 scope；
+- redirect URI 仅允许 `*.quicksight.aws.amazon.com` HTTPS 和本机 loopback HTTP；
+- 动态客户端默认 30 天 TTL；Token 继续由 KMS RS256 签名；
+- 登录页使用现有 Demo 用户,响应带 CSP/no-store,API Gateway 日志不记录请求体。
+
+Quick 中应选择用户 OAuth/自动注册路径；浏览器打开登录页后使用 `.env` 中的
+`DEMO_USERNAME` / `DEMO_PASSWORD`。若实际 Quick callback host 不在白名单,先从
+DCR 400 和 API Gateway access log 确认 host,再通过 Lambda 环境变量
+`DCR_ALLOWED_REDIRECT_HOSTS` 精确追加,不要使用任意域名通配。
+
+此模式不包含 MFA、锁定、企业用户目录、独立 consent、注册风控和生产审计；业务
+Lambda 也未做 `actor_id` 数据隔离,仅适合合成数据 Demo。
 
 ### Desktop Remote 401 兼容方案
 

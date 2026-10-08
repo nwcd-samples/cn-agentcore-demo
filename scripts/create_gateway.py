@@ -97,21 +97,45 @@ def find_gateway(client, name: str) -> dict[str, Any] | None:
             return None
 
 
-def build_authorizer_config(discovery_url: str, audience: str, client_ids: list[str]) -> dict:
+def resolve_allowed_clients(project: str) -> tuple[list[str], bool]:
+    """DCR 模式由 IdP 控制动态 client；否则保留固定 allowlist。"""
+    dcr_enabled = os.environ.get("ENABLE_OAUTH_DCR", "").strip().lower() in {
+        "1", "true", "yes"
+    }
+    return ([] if dcr_enabled else naming.gateway_client_ids(project)), dcr_enabled
+
+
+def build_authorizer_config(
+    discovery_url: str,
+    audience: str | list[str],
+    client_ids: list[str],
+    allowed_scopes: list[str] | None = None,
+) -> dict:
     """CUSTOM_JWT 配置。
 
-    allowedAudience 必须和自建 IdP 签出来的 aud 一致 —— 不一致的话
-    Gateway 会一律拒绝,而且错误信息很不明显。
+    allowedScopes 除了做入向权限校验,还会出现在 Gateway 的 RFC 9728
+    Protected Resource Metadata 中。Quick 会依据它请求 scope；不配置时
+    Gateway 发布空列表,Quick 会改用自身默认 scope,导致自建 IdP invalid_scope。
     """
-    cfg: dict[str, Any] = {
-        "customJWTAuthorizer": {
-            "discoveryUrl": discovery_url,
-            "allowedAudience": [audience],
-        }
+    jwt: dict[str, Any] = {
+        "discoveryUrl": discovery_url,
+        "allowedAudience": audience if isinstance(audience, list) else [audience],
+        "customClaims": [
+            {
+                "inboundTokenClaimName": "token_use",
+                "inboundTokenClaimValueType": "STRING",
+                "authorizingClaimMatchValue": {
+                    "claimMatchValue": {"matchValueString": "access"},
+                    "claimMatchOperator": "EQUALS",
+                },
+            }
+        ],
     }
     if client_ids:
-        cfg["customJWTAuthorizer"]["allowedClients"] = client_ids
-    return cfg
+        jwt["allowedClients"] = client_ids
+    if allowed_scopes:
+        jwt["allowedScopes"] = allowed_scopes
+    return {"customJWTAuthorizer": jwt}
 
 
 def ensure_gateway(client, *, name: str, role_arn: str, authorizer_config: dict) -> dict:
@@ -274,17 +298,34 @@ def main() -> int:
     if "placeholder.invalid" in discovery_url:
         die("IdP 的 issuer 还是占位值,先跑 scripts/deploy.sh 回填")
 
-    client_ids = naming.gateway_client_ids(args.project)
+    client_ids, dcr_enabled = resolve_allowed_clients(args.project)
+    gateway_resource = os.environ.get("GATEWAY_URL", "").rstrip("/")
+    if dcr_enabled and (not gateway_resource.startswith("https://") or not gateway_resource.endswith("/mcp")):
+        die("ENABLE_OAUTH_DCR=1 时必须在 .env 配置真实 GATEWAY_URL")
+    audiences: str | list[str] = (
+        [args.project, gateway_resource] if dcr_enabled else args.project
+    )
+    allowed_scopes = naming.QUICK_CLIENT_SCOPES
 
     log(f"discoveryUrl = {discovery_url}")
-    log(f"allowedAudience = {args.project}")
-    log(f"allowedClients = {client_ids}")
+    log(f"allowedAudience = {audiences}")
+    log(
+        "allowedClients = <由 IdP DCR 控制，Gateway 不固定 client_id>"
+        if dcr_enabled
+        else f"allowedClients = {client_ids}"
+    )
+    log(f"allowedScopes = {allowed_scopes}")
 
     gateway = ensure_gateway(
         control,
         name=gateway_name,
         role_arn=role_arn,
-        authorizer_config=build_authorizer_config(discovery_url, args.project, client_ids),
+        authorizer_config=build_authorizer_config(
+            discovery_url,
+            audiences,
+            client_ids,
+            allowed_scopes=allowed_scopes,
+        ),
     )
     gateway_id = gateway["gatewayId"]
     gateway = wait_ready(

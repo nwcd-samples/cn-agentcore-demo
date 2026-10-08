@@ -136,6 +136,11 @@ Resources:
           DEFAULT_AUDIENCE: !Ref Project
           ACCESS_TOKEN_TTL: !Ref AccessTokenTtl
           REFRESH_TOKEN_TTL: !Ref RefreshTokenTtl
+          AUTH_CODE_TTL: '300'
+          DCR_CLIENT_TTL: '2592000'
+          DCR_ALLOWED_REDIRECT_HOSTS: 'quicksight.aws.amazon.com'
+          # Gateway 创建后由 deploy.sh --quick-oauth 回填真实 /mcp URL。
+          MCP_RESOURCE: 'https://placeholder.invalid/mcp'
           LOG_LEVEL: INFO
       Code:
         ZipFile: |
@@ -196,6 +201,13 @@ Resources:
       RouteKey: 'POST /oauth2/token'
       Target: !Sub 'integrations/${IdpIntegration}'
 
+  RegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'POST /oauth2/register'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
   IntrospectRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -215,6 +227,13 @@ Resources:
     Properties:
       ApiId: !Ref IdpApi
       RouteKey: 'GET /oauth2/authorize'
+      Target: !Sub 'integrations/${IdpIntegration}'
+
+  AuthorizePostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref IdpApi
+      RouteKey: 'POST /oauth2/authorize'
       Target: !Sub 'integrations/${IdpIntegration}'
 
   IdpApiLogGroup:

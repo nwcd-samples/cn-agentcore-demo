@@ -6,6 +6,7 @@
 #   ./scripts/deploy.sh --code     # 只重推两个 Lambda 的代码
 #   ./scripts/deploy.sh --verify   # 只跑验证
 #   ./scripts/deploy.sh --quick    # 建/轮换 Quick S2S 客户端并更新 Gateway allowlist
+#   ./scripts/deploy.sh --quick-oauth # 部署 OAuth 2.1 DCR+PKCE 并启用动态客户端
 #
 # 幂等,可重复执行。
 set -euo pipefail
@@ -100,6 +101,16 @@ deploy_stacks() {
   "${AWS[@]}" cloudformation deploy \
     --template-file infra/30-logistics-web.yaml \
     --stack-name "$LOGISTICS_STACK" \
+    --parameter-overrides "Project=${PROJECT}" \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --no-fail-on-empty-changeset
+}
+
+deploy_idp_stack() {
+  log "部署 ${IDP_STACK}(OAuth 2.1 / DCR 路由)"
+  "${AWS[@]}" cloudformation deploy \
+    --template-file infra/10-auth-idp.yaml \
+    --stack-name "$IDP_STACK" \
     --parameter-overrides "Project=${PROJECT}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --no-fail-on-empty-changeset
@@ -217,6 +228,47 @@ $(log "在 Amazon Quick → Create for your team → MCP 中填写:")
   Token URL:           ${token_endpoint}
   Scope:               gateway:invoke tools:read tools:write
 EOF
+}
+
+configure_idp_mcp_resource() {
+  local fn_name resource current env_json
+  fn_name="$(stack_output "$IDP_STACK" IdpFunctionName)"
+  resource="${GATEWAY_URL:-}"
+  [[ "$resource" == https://*/mcp ]] \
+    || die "GATEWAY_URL 必须先写入 .env 且形如 https://.../mcp"
+  current="$("${AWS[@]}" lambda get-function-configuration \
+    --function-name "$fn_name" --query 'Environment.Variables.MCP_RESOURCE' --output text)"
+  if [[ "$current" == "$resource" ]]; then
+    log "MCP_RESOURCE 已是 ${resource},跳过"
+    return
+  fi
+  log "回填 MCP_RESOURCE=${resource}"
+  env_json="$(
+    "${AWS[@]}" lambda get-function-configuration \
+      --function-name "$fn_name" --query 'Environment.Variables' --output json |
+    python3 -c '
+import json,sys
+env=json.load(sys.stdin) or {}
+env["MCP_RESOURCE"]=sys.argv[1]
+json.dump({"Variables":env},sys.stdout)
+' "$resource"
+  )"
+  "${AWS[@]}" lambda update-function-configuration \
+    --function-name "$fn_name" --environment "$env_json" \
+    --output text --query 'LastModified' >/dev/null
+  "${AWS[@]}" lambda wait function-updated --function-name "$fn_name"
+}
+
+quick_oauth() {
+  local py=python3
+  [[ -x .venv/bin/python ]] && py=.venv/bin/python
+  deploy_idp_stack
+  push_lambda_code "$IDP_STACK" IdpFunctionName src/lambdas/idp
+  backfill_issuer
+  configure_idp_mcp_resource
+  log "启用 Gateway 动态 OAuth client 模式(issuer + audience + scope 校验)"
+  ENABLE_OAUTH_DCR=1 AWS_REGION="$AWS_REGION" PROJECT="$PROJECT" \
+    "$py" scripts/create_gateway.py
 }
 
 # ---- Gateway ------------------------------------------------------------
@@ -345,6 +397,8 @@ main() {
       preflight; seed ;;
     --quick)
       preflight; quick ;;
+    --quick-oauth)
+      preflight; quick_oauth ;;
     --gateway)
       preflight; gateway ;;
     --identity)
@@ -356,12 +410,15 @@ main() {
       deploy_stacks
       push_all_code
       backfill_issuer
+      if [[ "${ENABLE_OAUTH_DCR:-0}" == "1" ]]; then
+        configure_idp_mcp_resource
+      fi
       seed
       verify
       identity
       gateway ;;
     *)
-      die "未知参数:$1(可用:--code --verify --seed --quick --gateway --identity --runtime)" ;;
+      die "未知参数:$1(可用:--code --verify --seed --quick --quick-oauth --gateway --identity --runtime)" ;;
   esac
 }
 
