@@ -274,7 +274,7 @@ def main() -> int:
     if "placeholder.invalid" in discovery_url:
         die("IdP 的 issuer 还是占位值,先跑 scripts/deploy.sh 回填")
 
-    client_ids = naming.all_client_ids(args.project)
+    client_ids = naming.gateway_client_ids(args.project)
 
     log(f"discoveryUrl = {discovery_url}")
     log(f"allowedAudience = {args.project}")

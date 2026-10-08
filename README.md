@@ -205,7 +205,7 @@ tests/       本地单元测试(不需要 AWS 凭证)
 ## 测试
 
 ```
-pytest tests/                                  # 547 个用例,不需要 AWS 凭证
+pytest tests/                                  # 556 个用例,不需要 AWS 凭证
 cfn-lint infra/*.yaml --region cn-northwest-1   # 模板离线校验
 ```
 
@@ -241,6 +241,53 @@ MemoryLite 读写、Gateway 取 token、沙箱与浏览器会话启动、selftes
 - **不往 span 里写敏感内容。** 只记长度、条数、耗时、成败。
   异常也只记类型不记 message —— 所以显式传了 `record_exception=False`,
   OTEL 的默认行为会把异常消息(里面常有订单号、用户原话)记成 span event。
+
+## Amazon Quick 团队级 Remote MCP
+
+Amazon Quick 的团队 Connector 可以用 Service-to-Service(`client_credentials`)
+直接连接本项目的 business MCP Gateway。Quick 使用独立客户端
+`<PROJECT>-quick`,不复用 Runtime 的 `<DEMO_CLIENT_ID>-m2m`,因此可以单独轮换
+或吊销而不影响 Agent Runtime。
+
+创建客户端并更新 Gateway allowlist:
+
+```bash
+./scripts/deploy.sh --quick
+```
+
+首次执行且 `.env` 未提供 `QUICK_CLIENT_SECRET` 时,脚本会生成密钥并只打印一次。
+把它填回 `.env`,然后验证完整的换 token → MCP initialize → tools/list 链路:
+
+```bash
+.venv/bin/python scripts/verify_quick_mcp.py --verify
+```
+
+在 Quick 的 `Connectors → Create for your team → Model Context Protocol (MCP)` 中填写:
+
+| 字段 | 值 |
+| --- | --- |
+| MCP server endpoint | `.env` 中的 `GATEWAY_URL` |
+| Connection type | `Public network` |
+| Authentication | `Service-to-Service` |
+| Client ID | `QUICK_CLIENT_ID`(默认 `<PROJECT>-quick`) |
+| Client Secret | `QUICK_CLIENT_SECRET` |
+| Token URL | Auth IdP 栈输出的 `TokenEndpoint` |
+| Scope(如界面提供) | `gateway:invoke tools:read tools:write` |
+
+这是团队共享的服务身份,不是逐用户 OAuth。当前业务 Lambda 也没有按最终用户隔离
+订单,适合合成数据 Demo 和团队工具;生产逐用户场景仍需 Authorization Code + PKCE、
+JWT passthrough 和 Lambda 侧 `actor_id` 授权。
+
+若 Desktop 的直接 Remote Connector 因客户端版本问题持续 401,可用已经固定
+`mcp-remote@0.14.3` 的本地兼容代理；它优先使用 Quick 专用凭证:
+
+```text
+类型:Local
+Command:<仓库绝对路径>/scripts/quick_mcp_proxy.sh
+Arguments:(留空)
+Environment variables:(留空)
+Timeout:120
+```
 
 ## 本地 Web 演示台
 

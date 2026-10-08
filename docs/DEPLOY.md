@@ -25,7 +25,7 @@ cp .env.example .env    # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 先在本地跑一遍测试,确认环境没问题(不需要 AWS 凭证):
 
 ```bash
-.venv/bin/python -m pytest tests/ -q          # 475 个用例
+.venv/bin/python -m pytest tests/ -q          # 556 个用例
 .venv/bin/cfn-lint infra/*.yaml --region cn-northwest-1
 ```
 
@@ -54,6 +54,7 @@ cp .env.example .env    # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 ```bash
 ./scripts/deploy.sh --code       # 只重推三个 Lambda 的代码
 ./scripts/deploy.sh --seed       # 只重灌演示数据
+./scripts/deploy.sh --quick      # 只建/轮换 Quick S2S 客户端并更新 Gateway
 ./scripts/deploy.sh --verify     # 只跑连通性检查
 ./scripts/deploy.sh --identity   # 只配 Identity 出向凭证
 ./scripts/deploy.sh --gateway    # 只建/更新 Gateway
@@ -68,6 +69,80 @@ cp .env.example .env    # 填 AWS_PROFILE 和 DEEPSEEK_API_KEY
 20-business-tools.yaml  业务工具 Lambda
 30-logistics-web.yaml   物流查询页(Browser 的靶子)
 ```
+
+## Amazon Quick 团队级 Remote MCP（方案 A）
+
+团队级 Quick Connector 使用 `client_credentials` 自动获取和续期 Token。为避免
+Quick 密钥轮换影响 Runtime 调 Gateway,项目为它创建独立客户端:
+
+```text
+Runtime M2M: <DEMO_CLIENT_ID>-m2m
+Quick M2M:   <PROJECT>-quick（可用 QUICK_CLIENT_ID 覆盖）
+```
+
+### 1. 创建 Quick 客户端并更新 Gateway
+
+```bash
+./scripts/deploy.sh --quick
+```
+
+该命令只执行两件事:
+
+1. `seed_auth.py --quick-only` 创建/轮换 Quick client_credentials 客户端；
+2. 幂等更新 Gateway,把 Quick client ID 加入 `allowedClients`。
+
+它**不会**重灌业务数据,也不会轮换 Runtime M2M。首次执行时若
+`QUICK_CLIENT_SECRET` 为空,新 secret 只打印一次。保存到 `.env`:
+
+```bash
+QUICK_CLIENT_ID=agentcore-cn-quick
+QUICK_CLIENT_SECRET=<刚生成的密钥>
+```
+
+如果 `.env` 已有 `QUICK_CLIENT_SECRET`,重复执行会继续使用该值；要轮换时先换成
+新随机值再执行 `--quick`。
+
+### 2. 本地验证
+
+```bash
+.venv/bin/python scripts/verify_quick_mcp.py
+.venv/bin/python scripts/verify_quick_mcp.py --verify
+```
+
+第一条只打印非敏感配置；第二条真实执行 OAuth client_credentials、MCP initialize
+和 tools/list,但不会打印 secret 或 access token。预期返回 5 个 `business___*` 工具。
+
+### 3. Quick 团队 Connector 配置
+
+进入 `Connectors → Create for your team → Model Context Protocol (MCP)`:
+
+| 字段 | 配置 |
+| --- | --- |
+| MCP server endpoint | `GATEWAY_URL` |
+| Connection type | `Public network` |
+| Authentication | `Service-to-Service` |
+| Client ID | `QUICK_CLIENT_ID` |
+| Client Secret | `QUICK_CLIENT_SECRET` |
+| Token URL | `agentcore-cn-auth-idp` 栈的 `TokenEndpoint` |
+| Scope(可选) | `gateway:invoke tools:read tools:write` |
+
+Quick 2LO 是团队共享服务身份。它解决远程连接和自动续期,但不代表最终用户身份。
+生产逐用户授权需要另行实现 Authorization Code + PKCE,并将 JWT passthrough 到
+Tools Lambda 按 `actor_id` 做数据隔离和写权限校验。
+
+### Desktop Remote 401 兼容方案
+
+若 Amazon Quick Desktop 的直接 Remote Connector 未发送静态 Token,使用 Local:
+
+```text
+Command:   <仓库绝对路径>/scripts/quick_mcp_proxy.sh
+Arguments: 留空
+Timeout:   120
+```
+
+代理每次启动会自动发现 IdP、获取 M2M Token,再用固定的
+`mcp-remote@0.14.3` 转成 stdio；有 Quick 专用凭证时优先使用,否则兼容回退到
+Runtime M2M。Connector 连续运行超过 Token TTL 后重新连接即可获取新 Token。
 
 ## 调用
 

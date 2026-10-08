@@ -153,7 +153,7 @@ def build_authorizer(auth: str, project: str, idp: dict[str, str]) -> dict[str, 
         "customJWTAuthorizer": {
             "discoveryUrl": discovery,
             "allowedAudience": [project],
-            "allowedClients": naming.all_client_ids(project),
+            "allowedClients": naming.runtime_client_ids(project),
         }
     }
 

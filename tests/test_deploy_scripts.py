@@ -143,14 +143,14 @@ class TestCreateRuntimeParams:
         assert jwt["discoveryUrl"] == DISCOVERY_URL
         assert jwt["allowedAudience"] == ["agentcore-cn"]
 
-    def test_allowed_clients_match_the_seeded_ones(self, create_runtime):
-        """Runtime 和 Gateway 必须放行同一批客户端,
-        否则同一个 token 能调 Gateway 却调不了 Runtime。"""
+    def test_allowed_clients_match_runtime_callers_only(self, create_runtime):
+        """Quick 只接 business MCP Gateway,不能因此获得 Runtime 入向权限。"""
         import naming
 
         params = make_params(create_runtime)
         jwt = params["authorizerConfiguration"]["customJWTAuthorizer"]
-        assert jwt["allowedClients"] == naming.all_client_ids("agentcore-cn")
+        assert jwt["allowedClients"] == naming.runtime_client_ids("agentcore-cn")
+        assert naming.quick_client_id("agentcore-cn") not in jwt["allowedClients"]
 
     def test_iam_mode_omits_authorizer_entirely(self, create_runtime):
         """SigV4 入向的表达方式是"不传 authorizerConfiguration",

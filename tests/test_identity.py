@@ -410,25 +410,38 @@ class TestClientIdNaming:
     def _clean_env(self, monkeypatch):
         monkeypatch.delenv("DEMO_CLIENT_ID", raising=False)
         monkeypatch.delenv("GATEWAY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("QUICK_CLIENT_ID", raising=False)
 
     def test_defaults_are_derived_from_project(self):
         import naming
 
         assert naming.user_client_id("agentcore-cn") == "agentcore-cn-client"
         assert naming.m2m_client_id("agentcore-cn") == "agentcore-cn-client-m2m"
+        assert naming.quick_client_id("agentcore-cn") == "agentcore-cn-quick"
 
-    def test_env_override_applies_to_both(self, monkeypatch):
+    def test_env_overrides_are_independent(self, monkeypatch):
         import naming
 
         monkeypatch.setenv("DEMO_CLIENT_ID", "my-client")
         assert naming.user_client_id("p") == "my-client"
         assert naming.m2m_client_id("p") == "my-client-m2m"
+        monkeypatch.setenv("GATEWAY_CLIENT_ID", "runtime-machine")
+        monkeypatch.setenv("QUICK_CLIENT_ID", "quick-machine")
+        assert naming.m2m_client_id("p") == "runtime-machine"
+        assert naming.quick_client_id("p") == "quick-machine"
 
-    def test_allowed_clients_covers_both(self):
+    def test_allowed_clients_are_scoped_per_resource(self):
         import naming
 
-        ids = naming.all_client_ids("agentcore-cn")
-        assert ids == ["agentcore-cn-client", "agentcore-cn-client-m2m"]
+        assert naming.runtime_client_ids("agentcore-cn") == [
+            "agentcore-cn-client",
+            "agentcore-cn-client-m2m",
+        ]
+        assert naming.gateway_client_ids("agentcore-cn") == [
+            "agentcore-cn-client",
+            "agentcore-cn-client-m2m",
+            "agentcore-cn-quick",
+        ]
 
     def test_all_three_scripts_use_the_shared_helper(self):
         """静态检查:不允许任何脚本自己拼客户端 ID。"""
@@ -438,20 +451,19 @@ class TestClientIdNaming:
             assert '+ "-m2m"' not in source, f"{name} 在自己拼 m2m 后缀"
 
     def test_seed_creates_exactly_the_clients_the_gateway_allows(self):
-        """seed_auth 写进 DynamoDB 的客户端,必须正好是 Gateway 放行的那两个。"""
+        """seed_auth 创建的三类客户端必须正好等于 Gateway allowlist。"""
         import create_gateway
         import naming
 
-        # create_gateway 填进 allowedClients 的
-        allowed = set(naming.all_client_ids("agentcore-cn"))
-        # seed_auth 会建 user client 和 m2m client
+        allowed = set(naming.gateway_client_ids("agentcore-cn"))
         seeded = {
             naming.user_client_id("agentcore-cn"),
             naming.m2m_client_id("agentcore-cn"),
+            naming.quick_client_id("agentcore-cn"),
         }
         assert seeded == allowed
-        # setup_identity 用的那个必须在里面
         assert naming.m2m_client_id("agentcore-cn") in allowed
+        assert naming.quick_client_id("agentcore-cn") in allowed
         del create_gateway
 
 

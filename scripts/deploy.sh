@@ -5,6 +5,7 @@
 #   ./scripts/deploy.sh            # 建栈 / 更新栈 + 推代码 + 回填 issuer + seed
 #   ./scripts/deploy.sh --code     # 只重推两个 Lambda 的代码
 #   ./scripts/deploy.sh --verify   # 只跑验证
+#   ./scripts/deploy.sh --quick    # 建/轮换 Quick S2S 客户端并更新 Gateway allowlist
 #
 # 幂等,可重复执行。
 set -euo pipefail
@@ -190,6 +191,34 @@ seed() {
   AWS_REGION="$AWS_REGION" PROJECT="$PROJECT" "$py" scripts/seed_business.py
 }
 
+# ---- Amazon Quick 团队级 Remote MCP -------------------------------------
+
+quick() {
+  local py=python3
+  [[ -x .venv/bin/python ]] && py=.venv/bin/python
+
+  log "创建/轮换 Amazon Quick 独立 Service-to-Service 客户端"
+  AWS_REGION="$AWS_REGION" PROJECT="$PROJECT" "$py" scripts/seed_auth.py --quick-only
+
+  log "把 Quick client_id 加入 Gateway CUSTOM_JWT allowedClients"
+  AWS_REGION="$AWS_REGION" PROJECT="$PROJECT" "$py" scripts/create_gateway.py
+
+  local token_endpoint gateway_url quick_id
+  token_endpoint="$(stack_output "$IDP_STACK" TokenEndpoint)"
+  gateway_url="${GATEWAY_URL:-}"
+  quick_id="${QUICK_CLIENT_ID:-${PROJECT}-quick}"
+  cat <<EOF
+
+$(log "在 Amazon Quick → Create for your team → MCP 中填写:")
+  MCP server endpoint: ${gateway_url:-<使用 create_gateway.py 输出的 GATEWAY_URL>}
+  Authentication:      Service-to-Service
+  Client ID:           ${quick_id}
+  Client Secret:       使用 .env 中的 QUICK_CLIENT_SECRET（首次生成值见上方）
+  Token URL:           ${token_endpoint}
+  Scope:               gateway:invoke tools:read tools:write
+EOF
+}
+
 # ---- Gateway ------------------------------------------------------------
 
 gateway() {
@@ -314,6 +343,8 @@ main() {
       preflight; verify ;;
     --seed)
       preflight; seed ;;
+    --quick)
+      preflight; quick ;;
     --gateway)
       preflight; gateway ;;
     --identity)
@@ -330,7 +361,7 @@ main() {
       identity
       gateway ;;
     *)
-      die "未知参数:$1(可用:--code --verify --seed --gateway --identity --runtime)" ;;
+      die "未知参数:$1(可用:--code --verify --seed --quick --gateway --identity --runtime)" ;;
   esac
 }
 

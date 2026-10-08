@@ -1,46 +1,52 @@
-"""OAuth 客户端 ID 的命名约定。
+"""OAuth 客户端 ID 与 scope 的统一约定。
 
-三个脚本都要推导同一组客户端 ID:
-  seed_auth.py      建客户端(写进 DynamoDB)
-  create_gateway.py 把它们填进 CUSTOM_JWT 的 allowedClients
-  setup_identity.py 用 m2m 那个建 OAuth2 credential provider
-
-三处一旦不一致,症状是 Gateway 静默拒绝所有请求(allowedClients 不匹配),
-而且错误信息完全看不出根因。所以推导逻辑集中在这里,由测试保证不漂移。
-
-零依赖,能被三个脚本直接 import。
+所有会创建或放行客户端的脚本都必须调用这里，避免 IdP 中的 client_id 与
+Gateway CUSTOM_JWT allowedClients 漂移。
 """
 
 from __future__ import annotations
 
 import os
 
-# 机器到机器客户端的后缀
 M2M_SUFFIX = "-m2m"
+QUICK_SUFFIX = "-quick"
 
 
 def user_client_id(project: str) -> str:
-    """交互式用户登录用的客户端(password + refresh_token)。"""
+    """交互式 Demo 用户客户端（password + refresh_token）。"""
     return os.environ.get("DEMO_CLIENT_ID", "").strip() or f"{project}-client"
 
 
 def m2m_client_id(project: str) -> str:
-    """Gateway 出向用的客户端(client_credentials)。"""
-    return user_client_id(project) + M2M_SUFFIX
+    """Agent Runtime 调 Gateway 的机器客户端。"""
+    return (
+        os.environ.get("GATEWAY_CLIENT_ID", "").strip()
+        or user_client_id(project) + M2M_SUFFIX
+    )
 
 
-def all_client_ids(project: str) -> list[str]:
-    """填进 CUSTOM_JWT allowedClients 的完整列表。"""
+def quick_client_id(project: str) -> str:
+    """Amazon Quick 团队级 Remote MCP 的独立 Service-to-Service 客户端。"""
+    return os.environ.get("QUICK_CLIENT_ID", "").strip() or f"{project}{QUICK_SUFFIX}"
+
+
+def runtime_client_ids(project: str) -> list[str]:
+    """Runtime 入向只允许交互用户和 Runtime 原有 M2M，不允许 Quick。"""
     return [user_client_id(project), m2m_client_id(project)]
 
 
-# ---------------------------------------------------------------------------
-# Scope 约定
-#
-# 同样集中在这里。Agent 请求的 scope 必须是 m2m 客户端被授予的子集,
-# 否则自建 IdP 会以 invalid_scope 拒掉 —— 而这个错误要翻 IdP 的日志才看得见。
-# tests/test_identity.py 有断言保证 agent 侧和 seed 侧不漂移。
-# ---------------------------------------------------------------------------
+def gateway_client_ids(project: str) -> list[str]:
+    """Gateway 额外允许 Amazon Quick 团队级 MCP 客户端。"""
+    client_ids = [*runtime_client_ids(project), quick_client_id(project)]
+    if len(set(client_ids)) != len(client_ids):
+        raise ValueError(f"OAuth client ID 必须互不相同:{client_ids}")
+    return client_ids
+
+
+def all_client_ids(project: str) -> list[str]:
+    """兼容旧调用；等同于 Gateway 的完整客户端列表。"""
+    return gateway_client_ids(project)
+
 
 # 用户能被授予的上限
 USER_SCOPES = ["agent:invoke", "tools:read", "tools:write"]
@@ -48,5 +54,9 @@ USER_SCOPES = ["agent:invoke", "tools:read", "tools:write"]
 # 交互式客户端能请求的上限
 USER_CLIENT_SCOPES = ["agent:invoke", "gateway:invoke", "tools:read", "tools:write"]
 
-# Agent 调 Gateway 用的 m2m 客户端。需要 write —— 开工单是写操作。
+# Agent Runtime 调 Gateway。create_ticket 需要 tools:write。
 M2M_CLIENT_SCOPES = ["gateway:invoke", "tools:read", "tools:write"]
+
+# Quick 团队级 MCP 同样需要列工具、查询与可选写操作，但使用独立凭证，
+# 这样轮换或吊销 Quick 不会影响 Runtime。
+QUICK_CLIENT_SCOPES = ["gateway:invoke", "tools:read", "tools:write"]
