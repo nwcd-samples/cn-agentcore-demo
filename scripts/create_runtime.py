@@ -78,37 +78,42 @@ def stack_outputs(cfn, stack: str) -> dict[str, str]:
 
 
 def build_otel_environment(region: str) -> dict[str, str]:
-    """关掉 aws-opentelemetry-distro 的 OTLP 导出。
+    """配置中国区可用的 Trace 导出，并保持遥测不影响业务与数据安全。
 
-    这个 distro 在中国区有两处把 AWS 域名硬编码成 `.amazonaws.com`,
-    没处理 aws-cn 需要的 `.cn` 后缀。两处都用 DNS 验证过不存在:
+    AgentCore Runtime 会启用 Agent Observability；ADOT 0.20.0 随后用
+    ``setdefault`` 打开 ``OTEL_TRACES_EXPORTER=otlp``。但该版本自动生成的
+    X-Ray 地址缺少中国区所需的 ``.cn``，因此必须提供正确 endpoint。
 
-      logs exporter  -> logs.<region>.amazonaws.com
-      trace exporter -> xray.<region>.amazonaws.com
+    只改 endpoint 会得到 403，因为普通 OTLP HTTP exporter 不会自动签名。
+    ADOT 0.20.0 已内置 ``aws_sigv4`` credential provider：这里显式选择它，
+    并将签名服务固定为 ``xray``，使发往 ``amazonaws.com.cn`` 的请求使用
+    Runtime 执行角色做 SigV4 签名。
 
-    后果不是"少一条 trace":exporter 解析失败后在后台反复重试,把请求线程
-    拖住。实测 8 个自检步骤 3 秒跑完,调用又挂 4 分钟到客户端读超时 ——
-    业务逻辑早就成功了,调用方却拿到 ReadTimeoutError。
+    logs/metrics exporter 继续关闭：stdout/stderr 已由 Runtime 写入 CloudWatch，
+    服务级指标也由 AgentCore 提供。BatchSpanProcessor 超时限制为 5 秒，避免
+    遥测异常拖住业务。消息正文采集也显式关闭，span 只保留必要元数据。
 
-    【为什么不是改 endpoint】我先试过显式设
-    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT 指向正确的 .com.cn 域名,
-    结果换成了 `403 Forbidden` —— X-Ray 的 OTLP 端点要 SigV4 签名,
-    手工设 endpoint 会绕过 distro 自己的签名逻辑。改不通。
-
-    【为什么关掉是安全的】AgentCore Runtime 自带 Observability:
-      * 容器 stdout 已经进 /aws/bedrock-agentcore/runtimes/*
-      * trace id / span id 仍然正常生成并出现在每条日志里
-        (自检的 Observability 一项通过,拿到的是真实 trace id)
-    也就是说日志和 trace 上下文都在,只是不再由这个 distro 往 OTLP 推一份。
+    使用共享 ``aws/spans`` 目标，避免每个 Runtime 日志组都需要单独授权 X-Ray
+    写入。账号和区域仍必须先启用 CloudWatch Transaction Search。
     """
     return {
-        # 两个 exporter 全关。distro 仍会装 instrumentation(所以
-        # trace id / span id 照常生成),只是不导出。
-        "OTEL_TRACES_EXPORTER": "none",
+        # ADOT 0.20.0 的 aws-cn 修复：正确 endpoint + 显式 SigV4 HTTP session。
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": (
+            f"https://xray.{region}.amazonaws.com.cn/v1/traces"
+        ),
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER": "aws_sigv4",
+        "AWS_SIGV4_SERVICE": "xray",
+        "UNIFIED_TRACES_DESTINATION_ENABLED": "false",
+        # 标准日志已由 Runtime 收集；自定义指标暂不走有中国区缺陷的 exporter。
         "OTEL_LOGS_EXPORTER": "none",
         "OTEL_METRICS_EXPORTER": "none",
         "OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED": "false",
-        # 万一哪天又打开导出,别让它无限期拖住请求线程
+        # ADOT 和 Strands 都不采集 prompt / response 正文。Strands 的空白
+        # unredacted allowlist 会保留事件结构，但把消息和工具参数替换为 REDACTED。
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
+        "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_unredacted_attributes=",
+        "AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT": "true",
         "OTEL_BSP_EXPORT_TIMEOUT": "5000",
         "OTEL_BSP_SCHEDULE_DELAY": "2000",
     }

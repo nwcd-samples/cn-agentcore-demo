@@ -17,6 +17,8 @@ credentials.json
 
 # ---- 写 blog 的素材,不随仓库发布 ----
 docs/LESSONS.md
+# 博客正文及本地导出文件（如 .docx），均不进入 GitHub
+docs/blog-agentcore-cn.*
 
 # ---- Python ----
 __pycache__/

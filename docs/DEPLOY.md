@@ -261,11 +261,17 @@ Agent 按可用性降级 —— 某个能力还没配好,它照样能起来,只�
 | 位置 | 拼出来的错误域名 | 规避方式 |
 | --- | --- | --- |
 | `bedrock_agentcore._utils.endpoints.get_data_plane_endpoint()`(Browser 的 CDP 地址) | `bedrock-agentcore.<region>.amazonaws.com` | `src/agent/tools/browser.py` 的 `_fix_china_ws_url()`,幂等,SDK 修好后自动变空操作 |
-| `aws-opentelemetry-distro` 的 logs exporter | `logs.<region>.amazonaws.com` | 关掉 OTLP 日志导出,容器 stdout 本来就进 CloudWatch |
-| `aws-opentelemetry-distro` 的 trace exporter | `xray.<region>.amazonaws.com` | 关掉。试过显式指向正确域名,换来 `403 Forbidden` —— X-Ray 的 OTLP 端点要 SigV4,手工设 endpoint 会绕过 distro 自己的签名逻辑 |
+| `aws-opentelemetry-distro` 的 logs exporter | `logs.<region>.amazonaws.com` | 保持关闭。容器 stdout/stderr 本来就由 Runtime 写入 CloudWatch |
+| `aws-opentelemetry-distro` 自动推导的 trace endpoint | `xray.<region>.amazonaws.com` | 显式改为 `xray.<region>.amazonaws.com.cn/v1/traces`，同时设置 `OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER=aws_sigv4` 和 `AWS_SIGV4_SERVICE=xray` |
 
-后两个的后果比"少一条 trace"严重得多:exporter 解析失败后在后台反复重试,
-把请求线程拖住。
+logs exporter 解析失败后会在后台重试 DNS，可能拖住请求线程，因此本项目继续使用
+Runtime 的标准日志采集。Trace endpoint 可以改成中国区域名，但必须同时启用 ADOT
+0.20.0 内置的 `aws_sigv4` credential provider；只改 endpoint 会发送未签名请求并
+得到 403。部署参数也不能再用 `OTEL_TRACES_EXPORTER=none` 覆盖 Runtime 启用的
+trace exporter。Strands 默认会把消息作为 GenAI span event 写出，本项目设置
+`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_unredacted_attributes=`，使用空白名单将消息、
+模型回复和工具输入输出统一替换为 `REDACTED`。账号和区域还必须先启用 CloudWatch
+Transaction Search；只有本地 `traceId` 并不表示 CloudWatch 已经收到对应 span。
 
 另外有一个**和中国区无关、但同样只在真机上才暴露**的坑,记在这里因为它花的
 排查时间最长:

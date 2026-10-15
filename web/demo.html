@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AgentCore 智能售后演示台</title>
+  <title>AgentCore 智能售后智能体项目</title>
   <style>
     :root {
       --ink: #182230;
@@ -327,7 +327,7 @@
       <div class="brand-mark">AC</div>
       <div>
         <h1>AgentCore 智能售后演示台</h1>
-        <p>从客户问题到业务闭环 · 中国区全能力 Demo</p>
+        <p>从客户问题到业务闭环 · 中国区AgentCore全能力</p>
       </div>
     </div>
     <div class="runtime-status">
@@ -348,9 +348,9 @@
     </section>
 
     <nav class="mode-tabs" aria-label="演示模式">
-      <button class="mode-tab active" data-mode="intro">Demo 介绍</button>
-      <button class="mode-tab" data-mode="oneStop">一站式演示</button>
-      <button class="mode-tab" data-mode="guided">分步骤演示</button>
+      <button class="mode-tab active" data-mode="intro">项目介绍</button>
+      <button class="mode-tab" data-mode="oneStop">一站式运行</button>
+      <button class="mode-tab" data-mode="guided">分布运行</button>
       <button class="mode-tab" data-mode="resources">业务资源查看</button>
     </nav>
 
@@ -361,13 +361,13 @@
           <h2>让售后服务从“人工查系统”升级为“Agent 自主闭环”</h2>
           <p class="intro-lead">客户只需描述问题，Agent 即可安全地查询订单、操作承运商网页、读取赔付政策、精确计算金额、创建工单并记住服务偏好。模型负责推理，AgentCore 负责企业级运行与治理。</p>
           <div class="intro-actions">
-            <button class="intro-primary" data-go-mode="oneStop">开始一站式演示 →</button>
+            <button class="intro-primary" data-go-mode="oneStop">开始一站式运行 →</button>
             <button class="intro-secondary" data-go-mode="guided">按步骤理解方案</button>
             <button class="intro-secondary" data-go-mode="resources">先看业务数据</button>
           </div>
         </div>
         <div class="intro-case">
-          <span class="intro-case-label">本次 Demo 业务主线</span>
+          <span class="intro-case-label">业务主线</span>
           <strong>ORD-1024 物流严重延误</strong>
           <div class="intro-case-path">
             <div class="case-line"><span>1</span>查询订单与承诺送达时间</div>
@@ -426,7 +426,7 @@
       </section>
 
       <section class="card intro-section">
-        <div class="intro-section-head"><span>Demo Journey</span><h3>一条请求如何完成售后闭环</h3></div>
+        <div class="intro-section-head"><span>Journey</span><h3>一条请求如何完成售后闭环</h3></div>
         <div class="journey">
           <div class="journey-step"><span>01 · Gateway</span><b>查订单</b><small>金额、状态、承诺时间、运单号</small></div>
           <div class="journey-step"><span>02 · Browser</span><b>读物流页</b><small>定位西安中转中心分拣故障</small></div>
@@ -585,29 +585,29 @@
     const guidedSteps = [
       {
         title: "查询订单基础信息",
-        prompt: "这是分步骤演示的第 1 步。请只调用订单工具查询 ORD-1024，返回订单状态、金额、承诺送达时间和运单号。不要查询物流网页，不要计算赔付，不要创建工单。",
+        prompt: "这是分布运行的第 1 步。请只调用订单工具查询 ORD-1024，返回订单状态、金额、承诺送达时间和运单号。不要查询物流网页，不要计算赔付，不要创建工单。",
       },
       {
         title: "访问物流查询网页",
-        prompt: "这是分步骤演示的第 2 步。基于刚才订单的运单号，只使用 Browser 查询承运商物流网页，说明当前地点和异常原因。不要计算赔付或创建工单。",
+        prompt: "这是分布运行的第 2 步。基于刚才订单的运单号，只使用 Browser 查询承运商物流网页，说明当前地点和异常原因。不要计算赔付或创建工单。",
       },
       {
         title: "读取企业赔付政策",
-        prompt: "这是分步骤演示的第 3 步。只查询 logistics_delay 赔付政策，列出费率、周期、上限和最低赔付额。暂时不要计算，不要创建工单。",
+        prompt: "这是分布运行的第 3 步。只查询 logistics_delay 赔付政策，列出费率、周期、上限和最低赔付额。暂时不要计算，不要创建工单。",
       },
       {
         title: "在沙箱中精确计算",
-        prompt: "这是分步骤演示的第 4 步。结合前面查到的订单金额、超期时长和赔付政策，必须使用 run_python 按分计算应赔金额，并展示计算公式。不要创建工单。",
+        prompt: "这是分布运行的第 4 步。结合前面查到的订单金额、超期时长和赔付政策，必须使用 run_python 按分计算应赔金额，并展示计算公式。不要创建工单。",
       },
       {
         title: "检查并创建售后工单",
         writes: true,
-        prompt: "这是分步骤演示的第 5 步。先检查 ORD-1024 是否已有同类未关闭工单；如果没有，为本次物流延迟创建 normal 工单；如果已有则不要重复创建，并说明工单号。",
+        prompt: "这是分布运行的第 5 步。先检查 ORD-1024 是否已有同类未关闭工单；如果没有，为本次物流延迟创建 normal 工单；如果已有则不要重复创建，并说明工单号。",
       },
       {
         title: "记录客户通知偏好",
         writes: true,
-        prompt: "这是分步骤演示的第 6 步。请记住我的售后进展通知偏好是短信，并确认已经记录。",
+        prompt: "这是分布运行的第 6 步。请记住我的售后进展通知偏好是短信，并确认已经记录。",
       },
     ];
 
@@ -988,7 +988,7 @@
       copy.append(title, document.createElement("br"), document.createTextNode("每次只给 Agent 一个清晰目标，观察受控工具如何完成任务。"));
       empty.appendChild(copy);
       log.appendChild(empty);
-      toast("分步骤演示已重置，将创建全新会话");
+      toast("分布运行已重置，将创建全新会话");
     }
 
     async function runGuidedStep(index) {

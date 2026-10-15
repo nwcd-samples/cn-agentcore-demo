@@ -186,81 +186,74 @@ class TestEnvironment:
         )
 
     def test_matches_what_the_agent_actually_reads(self, create_runtime):
-        """脚本注入的变量名必须真的被 Agent 读取,否则等于没配 ——
-        Agent 会静默用默认值,而部署方以为配上了。
+        """脚本注入的变量名必须真的被 Agent 或 Runtime 平台读取。
 
-        扫 config.py 和 main.py 两个文件:前者读业务配置,
-        后者读 LOG_LEVEL / PORT 这类进程级配置。
-
-        OTEL_* 例外:那些是给 aws-opentelemetry-distro / OTEL SDK 读的,
-        我们的代码不碰。它们在 create_runtime.py 里各自带了注释说明用途。
+        config.py / main.py 读取业务和进程配置；OTEL_* 交给 ADOT SDK，
+        UNIFIED_TRACES_DESTINATION_ENABLED 由 AgentCore Runtime 平台读取。
         """
         sources = "\n".join(
             (REPO_ROOT / "src" / "agent" / f).read_text()
             for f in ("config.py", "main.py")
         )
+        sdk_vars = {
+            "UNIFIED_TRACES_DESTINATION_ENABLED",
+            "AWS_SIGV4_SERVICE",
+            "AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT",
+        }
         unread = [
             k
             for k in self._env(create_runtime)
-            if f'"{k}"' not in sources and not k.startswith("OTEL_")
+            if f'"{k}"' not in sources
+            and not k.startswith("OTEL_")
+            and k not in sdk_vars
         ]
         assert not unread, f"注入了但没人读的环境变量:{unread}"
 
     def test_otel_vars_are_explained(self, create_runtime):
-        """OTEL_* 绕过了上面的检查,所以必须在源码里写清为什么注入它们 ——
-        否则后人看到一个没人读的变量会顺手删掉。
-        """
+        """OTEL_* 绕过了上面的检查,所以必须在源码里写清用途。"""
         source = (REPO_ROOT / "scripts" / "create_runtime.py").read_text()
         for key in (k for k in self._env(create_runtime) if k.startswith("OTEL_")):
             assert key in source
-        # 这两个是规避中国区 SDK bug 的,理由必须写明
-        assert "logs.cn-northwest-1.amazonaws.com" in source or "aws-cn" in source
+        assert "aws-cn" in source
         assert "OTEL_LOGS_EXPORTER" in source
 
-    def test_all_otlp_exporters_are_disabled(self, create_runtime):
-        """aws-opentelemetry-distro 在中国区把 logs / xray endpoint 都拼成
-        .amazonaws.com(漏了 .cn,DNS 验证不存在)。解析失败后它在后台反复
-        重试,把请求线程拖住 —— 实测 8 个自检步骤 3 秒跑完,调用又挂 4 分钟
-        到客户端读超时,业务成功了却看起来失败。
-
-        试过显式设正确的 .com.cn endpoint,换成 403 Forbidden ——
-        X-Ray 的 OTLP 端点要 SigV4,手工设 endpoint 绕过了 distro 的签名。
-        所以只能关掉导出。
-        """
+    def test_runtime_managed_trace_export_is_enabled(self, create_runtime):
+        """不能用 none 覆盖 Runtime 注入的托管 trace exporter。"""
         env = create_runtime.build_otel_environment("cn-northwest-1")
-        for key in ("OTEL_TRACES_EXPORTER", "OTEL_LOGS_EXPORTER",
-                    "OTEL_METRICS_EXPORTER"):
-            assert env[key] == "none", f"{key} 没关掉,会拖死请求线程"
+        assert env.get("OTEL_TRACES_EXPORTER") != "none"
+        assert env["UNIFIED_TRACES_DESTINATION_ENABLED"] == "false"
+        assert env["OTEL_LOGS_EXPORTER"] == "none"
+        assert env["OTEL_METRICS_EXPORTER"] == "none"
 
-    def test_no_manual_endpoint_override(self, create_runtime):
-        """不能手工设 OTLP endpoint —— 那会绕过 distro 的 SigV4 签名,
-        换来 403 而不是解决问题。"""
+    def test_china_trace_endpoint_uses_sigv4(self, create_runtime):
+        """中国区正确 endpoint 必须和 ADOT 的 SigV4 session 同时配置。"""
         env = create_runtime.build_otel_environment("cn-northwest-1")
-        assert not any("ENDPOINT" in k for k in env), (
-            "手工设 endpoint 会绕过 SigV4 签名,实测得到 403"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == (
+            "https://xray.cn-northwest-1.amazonaws.com.cn/v1/traces"
         )
+        assert env["OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER"] == (
+            "aws_sigv4"
+        )
+        assert env["AWS_SIGV4_SERVICE"] == "xray"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+        assert env["OTEL_SEMCONV_STABILITY_OPT_IN"] == (
+            "gen_ai_unredacted_attributes="
+        )
+        assert env["AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT"] == "true"
 
     def test_export_timeout_is_bounded(self, create_runtime):
-        """万一哪天重新打开导出,也不许无限期拖住请求线程。"""
+        """遥测导出异常也不能无限期拖住请求线程。"""
         env = create_runtime.build_otel_environment("cn-northwest-1")
         assert int(env["OTEL_BSP_EXPORT_TIMEOUT"]) <= 10_000
 
-    def test_trace_context_still_works(self, create_runtime):
-        """关的只是【导出】。instrumentation 仍在装,所以 trace id / span id
-        照常生成并出现在日志里 —— 自检的 Observability 一项靠它通过。
-        """
+    def test_trace_instrumentation_is_not_disabled(self, create_runtime):
         env = create_runtime.build_otel_environment("cn-northwest-1")
-        # 没有关掉 instrumentation 本身的开关
         assert "OTEL_SDK_DISABLED" not in env
+        assert env.get("OTEL_TRACES_EXPORTER") != "none"
 
     def test_otel_logs_exporter_is_disabled(self, create_runtime):
-        """aws-opentelemetry-distro 的 logs exporter 在中国区把 endpoint
-        拼成 logs.<region>.amazonaws.com(漏了 .cn),该域名无法解析。
-        它会在后台不断重试 DNS,把请求线程拖死 —— 症状是工具调用"卡住"
-        而不是报错,调用方一路读超时。
-
-        容器日志本来就通过 stdout 进 CloudWatch,不需要再走一遍 OTLP。
-        """
+        """stdout 已进 CloudWatch；关闭有 aws-cn 域名缺陷的 OTLP logs exporter。"""
         env = self._env(create_runtime)
         assert env.get("OTEL_LOGS_EXPORTER") == "none"
 
